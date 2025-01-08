@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import mplfinance as mpf
 from datetime import datetime
 import backtrader as bt
 from EMACrossover import EMACrossStrategy
@@ -9,8 +10,9 @@ def load_market_data(file_path: str) -> pd.DataFrame:
     """Load and prepare market data from CSV file"""
     df = pd.read_csv(file_path)
     df['datetime'] = pd.to_datetime(df['datetime'])
+    df.set_index('datetime', inplace=True)
     
-    required_columns = ['datetime', 'Open', 'High', 'Low', 'Close', 'Volume']
+    required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
     if not all(col in df.columns for col in required_columns):
         raise ValueError(f"CSV must contain columns: {required_columns}")
     
@@ -21,7 +23,7 @@ def test_emacross_strategy(file_path: str):
     # Load market data
     print(f"Loading market data from {file_path}...")
     df = load_market_data(file_path)
-    print(f"Loaded {len(df)} candles from {df['datetime'].iloc[0]} to {df['datetime'].iloc[-1]}")
+    print(f"Loaded {len(df)} candles from {df.index[0]} to {df.index[-1]}")
     
     # Create Backtrader cerebro instance
     cerebro = bt.Cerebro()
@@ -29,7 +31,7 @@ def test_emacross_strategy(file_path: str):
     # Add data feed
     data = bt.feeds.PandasData(
         dataname=df,
-        datetime='datetime',
+        datetime=None,  # Already indexed
         open='Open',
         high='High',
         low='Low',
@@ -39,65 +41,180 @@ def test_emacross_strategy(file_path: str):
     )
     cerebro.adddata(data)
     
-    # Add strategy with default parameters
+    # Add strategy
     cerebro.addstrategy(EMACrossStrategy)
     
-    # Run strategy to calculate indicators
-    print("Calculating indicators...")
+    # Add these broker settings to match EMACrossover.py
+    initial_cash = 100.0
+    cerebro.broker.setcash(initial_cash)
+    cerebro.broker.setcommission(
+        commission=0.0002,
+        leverage=50,
+        commtype=bt.CommInfoBase.COMM_PERC
+    )
+    cerebro.broker.set_slippage_perc(0.0001)
+
+    # Add analyzers
+    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", riskfreerate=0.0)
+    cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
+    cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
+    cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
+    cerebro.addanalyzer(bt.analyzers.TimeReturn, _name="time_return")
+    
+    # Run strategy
+    print("Running strategy...")
     results = cerebro.run()
     strategy = results[0]
     
-    # Extract indicator values for plotting
-    ema_short_values = np.array(strategy.ema_short.lines[0].array)
-    ema_long_values = np.array(strategy.ema_long.lines[0].array)
-    stoch_k_values = np.array(strategy.stochastic.lines.percK.array)
-    stoch_d_values = np.array(strategy.stochastic.lines.percD.array)
+    # Create plot data
+    df_plot = df.copy()
+    apds = []
     
-    # Trim any NaN values at the beginning (warmup period)
-    valid_length = len(df)
-    ema_short_values = ema_short_values[-valid_length:]
-    ema_long_values = ema_long_values[-valid_length:]
-    stoch_k_values = stoch_k_values[-valid_length:]
-    stoch_d_values = stoch_d_values[-valid_length:]
+    # Plot trade zones
+    if strategy.trade_exits:
+        for trade in strategy.trade_exits:
+            try:
+                # Get entry/exit data
+                if 'entry_time' in trade and 'exit_time' in trade:
+                    entry_time = trade['entry_time']
+                    exit_time = trade['exit_time']
+                    entry_price = trade['entry_price']
+                    exit_price = trade['exit_price']
+                else:
+                    continue
+
+                is_long = 'long' in trade['type']
+                # Determine if trade was successful based on direction
+                is_successful = (is_long and exit_price > entry_price) or (not is_long and exit_price < entry_price)
+                
+                # Create filled rectangle for the trade
+                mask = (df_plot.index >= entry_time) & (df_plot.index <= exit_time)
+                trade_period = df_plot.index[mask]
+                
+                if len(trade_period) == 0:
+                    continue
+                    
+                # Create a series for the connecting line
+                trade_line = pd.Series(index=df_plot.index, data=np.nan)
+                
+                # Create line points to connect entry and exit
+                idx = df_plot.index[mask]
+                if len(idx) >= 2:
+                    # Only fill values between entry and exit times
+                    trade_line.loc[entry_time] = entry_price
+                    trade_line.loc[exit_time] = exit_price
+                    # Fill intermediate points with linear interpolation
+                    trade_line.loc[entry_time:exit_time] = np.linspace(
+                        entry_price, 
+                        exit_price, 
+                        len(df_plot.loc[entry_time:exit_time])
+                    )
+                
+                # Add the connecting line - color based on trade success
+                color = 'green' if is_successful else 'red'  # Color based on whether trade went in intended direction
+                apds.append(mpf.make_addplot(
+                    trade_line,
+                    type='line',
+                    color=color,
+                    width=1.5,
+                    alpha=0.8
+                ))
+
+                # Plot entry point - color based on direction
+                entry_series = pd.Series(index=df_plot.index, data=np.nan)
+                entry_series[entry_time] = entry_price
+                apds.append(
+                    mpf.make_addplot(
+                        entry_series,
+                        type='scatter',
+                        marker='^' if is_long else 'v',
+                        markersize=100,
+                        color='green' if is_long else 'red'  # Entry marker color based on direction
+                    )
+                )
+
+                # Plot exit point - color based on trade success
+                exit_series = pd.Series(index=df_plot.index, data=np.nan)
+                exit_series[exit_time] = exit_price
+                apds.append(
+                    mpf.make_addplot(
+                        exit_series,
+                        type='scatter',
+                        marker='x',
+                        markersize=100,
+                        color='green' if is_successful else 'red'  # Exit marker color based on success
+                    )
+                )
+
+            except Exception as e:
+                print(f"Warning: Could not plot trade: {e}")
+                print(f"Trade data: {trade}")
+                continue
+
+    # Create custom style
+    style = mpf.make_mpf_style(
+        marketcolors=mpf.make_marketcolors(up='green', down='red', inherit=True),
+        gridcolor='gray',
+        gridstyle='--',
+        gridaxis='both'
+    )
+
+    # Plot with returnfig=True to get figure and axes
+    fig, axes = mpf.plot(
+        df_plot,
+        type='candle',
+        style=style,
+        title='EMACross Strategy Trades',
+        addplot=apds,
+        volume=False,
+        figsize=(20, 10),
+        warn_too_much_data=100000,
+        returnfig=True
+    )
+
+    # Create custom legend
+    legend_elements = [
+        plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='green', 
+                  markersize=10, label='Long Entry'),
+        plt.Line2D([0], [0], marker='v', color='w', markerfacecolor='red', 
+                  markersize=10, label='Short Entry'),
+        plt.Line2D([0], [0], marker='x', color='green', markersize=10, 
+                  label='Profit Exit'),
+        plt.Line2D([0], [0], marker='x', color='red', markersize=10, 
+                  label='Loss Exit'),
+        plt.Line2D([0], [0], color='green', linewidth=3, label='Winning Trade'),
+        plt.Line2D([0], [0], color='red', linewidth=3, label='Losing Trade')
+    ]
     
-    # Create visualization
-    plt.figure(figsize=(20, 12))
-    
-    # Plot price and EMAs
-    plt.subplot(2, 1, 1)
-    plt.plot(df.index, df['Close'], label='Price', alpha=0.7)
-    plt.plot(df.index, ema_short_values, label=f'EMA {strategy.p.ema_short}', alpha=0.7)
-    plt.plot(df.index, ema_long_values, label=f'EMA {strategy.p.ema_long}', alpha=0.7)
-    plt.title('Price and EMAs')
-    plt.legend()
-    plt.grid(True)
-    
-    # Plot Stochastic
-    plt.subplot(2, 1, 2)
-    plt.plot(df.index, stoch_k_values, label='Stoch %K', alpha=0.7)
-    plt.plot(df.index, stoch_d_values, label='Stoch %D', alpha=0.7)
-    plt.axhline(y=80, color='r', linestyle='--', alpha=0.5)
-    plt.axhline(y=20, color='g', linestyle='--', alpha=0.5)
-    plt.title('Stochastic Oscillator')
-    plt.legend()
-    plt.grid(True)
-    
-    plt.tight_layout()
+    axes[0].legend(handles=legend_elements, loc='upper left')
     plt.show()
     
-    # Print indicator parameters
-    print("\nIndicator Parameters:")
-    print(f"EMA Short period: {strategy.p.ema_short}")
-    print(f"EMA Long period: {strategy.p.ema_long}")
-    print(f"Stochastic period: {strategy.p.stochastic_period}")
+    # Print summary statistics using analyzers (like in EMACrossover.py)
+    trades_analysis = strategy.analyzers.trades.get_analysis()
     
-    # Check for any NaN values in indicators
-    print("\nIndicator Data Quality Check:")
-    print(f"NaN in EMA Short: {np.isnan(ema_short_values).any()}")
-    print(f"NaN in EMA Long: {np.isnan(ema_long_values).any()}")
-    print(f"NaN in Stochastic K: {np.isnan(stoch_k_values).any()}")
-    print(f"NaN in Stochastic D: {np.isnan(stoch_d_values).any()}")
+    total_trades = trades_analysis.total.closed if hasattr(trades_analysis, 'total') else 0
+    winning_trades = trades_analysis.won.total if hasattr(trades_analysis, 'won') else 0
+    total_pnl = trades_analysis.pnl.net.total if hasattr(trades_analysis, 'pnl') else 0
+    
+    print("\nStrategy Summary:")
+    print(f"Total Trades: {total_trades}")
+    print(f"Winning Trades: {winning_trades}")
+    print(f"Win Rate: {(winning_trades/total_trades*100):.2f}%")
+    print(f"Total PnL: {total_pnl:.2f}")
+    
+    # Add safe getters for statistics that might be None
+    try:
+        sharpe_ratio = strategy.analyzers.sharpe.get_analysis()['sharperatio']
+        print(f"Sharpe Ratio: {sharpe_ratio:.2f}" if sharpe_ratio is not None else "Sharpe Ratio: N/A")
+    except (KeyError, AttributeError):
+        print("Sharpe Ratio: N/A")
+
+    try:
+        max_drawdown = strategy.analyzers.drawdown.get_analysis().max.drawdown
+        print(f"Max Drawdown: {max_drawdown:.2f}%" if max_drawdown is not None else "Max Drawdown: N/A")
+    except (KeyError, AttributeError):
+        print("Max Drawdown: N/A")
 
 if __name__ == "__main__":
-    file_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-5m-20240929-to-20241128.csv"
+    file_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-5m-20240929-to-20241128.csv"
     test_emacross_strategy(file_path)

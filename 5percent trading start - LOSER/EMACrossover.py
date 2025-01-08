@@ -22,15 +22,17 @@ class EMACrossStrategy(bt.Strategy):
         ("stochastic_period", 12),
         ("stochastic_pfast", 5),
         ("stochastic_pslow", 3),
-        ("stop_loss", 0.005),
-        ("take_profit", 0.0246),
+        ("stop_loss", 0.01),
+        ("take_profit", 0.02),
     )
 
     def __init__(self):
         """Initialize strategy components"""
-        # Initialize indicators
         self.buy_signals = []
         self.sell_signals = []
+        self.trade_exits = []
+        self.active_trades = []  # To track ongoing trades for visualization
+        
         self.ema_short = bt.indicators.EMA(self.data.close, period=self.p.ema_short)
         self.ema_long = bt.indicators.EMA(self.data.close, period=self.p.ema_long)
         self.stochastic = bt.indicators.Stochastic(
@@ -50,7 +52,7 @@ class EMACrossStrategy(bt.Strategy):
             else:
                 position_value = 100.0
 
-            leverage = 50
+            leverage = 10
 
             # Adjust position size according to leverage
             position_size = (position_value * leverage) / current_price
@@ -79,29 +81,88 @@ class EMACrossStrategy(bt.Strategy):
             # Calculate position size
             position_size = self.calculate_position_size(self.data.close[0])
             current_price = self.data.close[0]
+
             # Enter Long Position
             if golden_cross and price_near_ema and stoch_above_20:
-                stop_loss = current_price - (current_price * self.p.stop_loss)
-                take_profit = current_price + (current_price * self.p.take_profit)
+                stop_loss = current_price * (1 - self.p.stop_loss)
+                take_profit = current_price * (1 + self.p.take_profit)
                 self.buy_signals.append(self.data.datetime.datetime(0))
+                
+                # Create bracket order with market entry
                 self.buy_bracket(
                     size=position_size,
                     exectype=bt.Order.Market,
-                    limitprice=take_profit,
+                    price=current_price,
                     stopprice=stop_loss,
+                    limitprice=take_profit,
+                    stopexec=bt.Order.Stop,
+                    limitexec=bt.Order.Limit,
                 )
 
             # Enter Short Position
             elif death_cross and price_near_ema and stoch_below_80:
-                stop_loss = current_price + (current_price * self.p.stop_loss)
-                take_profit = current_price - (current_price * self.p.take_profit)
+                stop_loss = current_price * (1 + self.p.stop_loss)
+                take_profit = current_price * (1 - self.p.take_profit)
                 self.sell_signals.append(self.data.datetime.datetime(0))
+                
+                # Create bracket order with market entry
                 self.sell_bracket(
                     size=position_size,
                     exectype=bt.Order.Market,
-                    limitprice=take_profit,
+                    price=current_price,
                     stopprice=stop_loss,
+                    limitprice=take_profit,
+                    stopexec=bt.Order.Stop,
+                    limitexec=bt.Order.Limit,
                 )
+
+    def notify_trade(self, trade):
+        if not trade.isclosed:
+            return
+
+        try:
+            # Get entry and exit prices
+            entry_price = trade.price
+            exit_price = trade.history[-1].price if trade.history else self.data.close[0]
+            pnl = trade.pnl
+            
+            # Store trade exit information for visualization
+            self.trade_exits.append({
+                'datetime': self.data.datetime.datetime(0),
+                'price': exit_price,
+                'type': 'long_exit' if trade.size > 0 else 'short_exit',
+                'pnl': pnl,
+                'entry_price': entry_price
+            })
+            
+        except Exception as e:
+            print(f"Warning: Could not process trade: {str(e)}")
+            print(f"Trade info - Status: {trade.status}, Size: {trade.size}, "
+                  f"Price: {trade.price}, PnL: {trade.pnl}")
+
+    def notify_order(self, order):
+        if order.status == order.Completed:
+            if not order.parent:  # This is an entry order
+                # Record trade start
+                self.active_trades.append({
+                    'entry_time': self.data.datetime.datetime(0),
+                    'entry_price': order.executed.price,
+                    'type': 'long' if order.isbuy() else 'short',
+                    'size': order.executed.size
+                })
+            else:  # This is an exit order
+                if self.active_trades:
+                    trade = self.active_trades.pop()
+                    # Record trade exit
+                    self.trade_exits.append({
+                        'entry_time': trade['entry_time'],
+                        'entry_price': trade['entry_price'],
+                        'exit_time': self.data.datetime.datetime(0),
+                        'exit_price': order.executed.price,
+                        'type': f"{trade['type']}_exit",
+                        'pnl': (order.executed.price - trade['entry_price']) * trade['size'] if trade['type'] == 'long' 
+                              else (trade['entry_price'] - order.executed.price) * trade['size']
+                    })
 
 def calculate_sqn(trades):
     """Calculate System Quality Number using individual trade data"""
@@ -172,8 +233,8 @@ def run_backtest(data, verbose=True, **kwargs):
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.setcommission(
         commission=0.0002,
-        # margin=1.0 / 50,
-        leverage=50,
+        margin=1.0 / 10,
+        # leverage=50,
         commtype=bt.CommInfoBase.COMM_PERC
     )
     cerebro.broker.set_slippage_perc(0.0001)
@@ -556,22 +617,22 @@ def walk_forward_optimization(data, window_size_ratio=0.5, step_size_ratio=0.1):
 if __name__ == "__main__":
     # Define all data paths
     data_paths = [
-        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-1000PEPEUSDT-1m-20240929-to-20241128.csv",
-        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-1000PEPEUSDT-5m-20240929-to-20241128.csv",
-        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ADAUSDT-1m-20240929-to-20241128.csv",
-        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ADAUSDT-5m-20240929-to-20241128.csv",
-        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-1000PEPEUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-1000PEPEUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ADAUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ADAUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-1m-20240929-to-20241128.csv",
         r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-5m-20240929-to-20241128.csv",
-        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-DOGEUSDT-1m-20240929-to-20241128.csv",
-        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-DOGEUSDT-5m-20240929-to-20241128.csv",
-        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ETHUSDT-1m-20240929-to-20241128.csv",
-        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ETHUSDT-5m-20240929-to-20241128.csv",
-        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-1m-20240929-to-20241128.csv",
-        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-5m-20240929-to-20241128.csv",
-        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-1m-20240929-to-20241128.csv",
-        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-5m-20240929-to-20241128.csv",
-        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-1m-20240929-to-20241128.csv",
-        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-DOGEUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-DOGEUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ETHUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ETHUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-5m-20240929-to-20241128.csv",
     ]
 
     # Store results for all datasets
@@ -602,6 +663,8 @@ if __name__ == "__main__":
             
         except Exception as e:
             print(f"Error processing {data_path}: {str(e)}")
+            full_traceback = traceback.format_exc()
+            print(f"Full traceback: {full_traceback}")
             continue
 
     # Sort results by win rate and get top 3

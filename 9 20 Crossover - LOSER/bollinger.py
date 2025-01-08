@@ -24,6 +24,10 @@ class BBStrategy(bt.Strategy):
 
     def __init__(self):
         """Initialize strategy components"""
+        # Initialize trade tracking
+        self.trade_exits = []
+        self.active_trades = []  # To track ongoing trades for visualization
+        
         # Initialize indicators
         self.bollinger = bt.indicators.BollingerBands(self.data.close, period=self.params.period, devfactor=self.params.devfactor)
         self.bb_upper = self.bollinger.top
@@ -38,7 +42,7 @@ class BBStrategy(bt.Strategy):
             else:
                 position_value = 100.0
 
-            leverage = 50
+            leverage = 10
 
             # Adjust position size according to leverage
             position_size = (position_value * leverage) / current_price
@@ -62,6 +66,54 @@ class BBStrategy(bt.Strategy):
                                 stopprice=self.data.close[0] * (1 + self.params.stop_loss),
                                 limitprice=self.data.close[0] * (1 - self.params.take_profit))
         
+
+    def notify_trade(self, trade):
+        if not trade.isclosed:
+            return
+
+        try:
+            # Get entry and exit prices
+            entry_price = trade.price
+            exit_price = trade.history[-1].price if trade.history else self.data.close[0]
+            pnl = trade.pnl
+            
+            # Store trade exit information for visualization
+            self.trade_exits.append({
+                'datetime': self.data.datetime.datetime(0),
+                'price': exit_price,
+                'type': 'long_exit' if trade.size > 0 else 'short_exit',
+                'pnl': pnl,
+                'entry_price': entry_price
+            })
+            
+        except Exception as e:
+            print(f"Warning: Could not process trade: {str(e)}")
+            print(f"Trade info - Status: {trade.status}, Size: {trade.size}, "
+                  f"Price: {trade.price}, PnL: {trade.pnl}")
+
+    def notify_order(self, order):
+        if order.status == order.Completed:
+            if not order.parent:  # This is an entry order
+                # Record trade start
+                self.active_trades.append({
+                    'entry_time': self.data.datetime.datetime(0),
+                    'entry_price': order.executed.price,
+                    'type': 'long' if order.isbuy() else 'short',
+                    'size': order.executed.size
+                })
+            else:  # This is an exit order
+                if self.active_trades:
+                    trade = self.active_trades.pop()
+                    # Record trade exit
+                    self.trade_exits.append({
+                        'entry_time': trade['entry_time'],
+                        'entry_price': trade['entry_price'],
+                        'exit_time': self.data.datetime.datetime(0),
+                        'exit_price': order.executed.price,
+                        'type': f"{trade['type']}_exit",
+                        'pnl': (order.executed.price - trade['entry_price']) * trade['size'] if trade['type'] == 'long' 
+                              else (trade['entry_price'] - order.executed.price) * trade['size']
+                    })
 
 class TradeRecorder(bt.Analyzer):
     """Custom analyzer to record individual trade results for SQN calculation"""
@@ -132,8 +184,8 @@ def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.setcommission(
         commission=0.0002,
-        # margin=1.0 / 50,
-        leverage=50,
+        margin=1.0 / 10,
+        # leverage=50,
         commtype=bt.CommInfoBase.COMM_PERC
     )
     cerebro.broker.set_slippage_perc(0.0001)

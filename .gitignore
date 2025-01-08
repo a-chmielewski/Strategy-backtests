@@ -1,0 +1,154 @@
+AI API keys.txt
+moje notatki.txt
+pomysly z czata.txt
+5percent trading start - LOSER/emacross_hof_results.json
+5percent trading start - LOSER/opis.txt
+5percent trading start - LOSER/__pycache__/EMACrossover.cpython-312.pyc
+9 20 Crossover - LOSER/2517-SUBMISSION - Manuscript File (.pdf_.docx)-10018-1-10-20230911.pdf
+9 20 Crossover - LOSER/opis.txt
+9 20 Crossover - LOSER/__pycache__/bollinger.cpython-312.pyc
+9 20 Crossover - LOSER/__pycache__/EMA_BB_pSAR_RSI.cpython-312.pyc
+9 20 Crossover - LOSER/__pycache__/EMA.cpython-312.pyc
+Ask-Bid Spread Exploitation - LOSER/ask-bid-spread-backtest.py
+Ask-Bid Spread Exploitation - LOSER/BidAskSpreadStrategy_min_spread-0_0001,max_spread-0_002,volume_factor-1_2,max_volatility-0_02,position_size-0_02,max_positions-3,hold_time-5_.html
+Ask-Bid Spread Exploitation - LOSER/BidAskSpreadStrategy_min_spread-0_0002,max_spread-0_002,volume_factor-1_5,max_volatility-0_02,position_size-0_02,max_positions-3,hold_time-5_.html
+Ask-Bid Spread Exploitation - LOSER/Efficient-estimation-of-bid-ask-spreads-from-open--_2024_Journal-of-Financia.pdf
+Ask-Bid Spread Exploitation - LOSER/EnhancedBidAskSpreadStrategy_min_spread-0_2476311071632459,max_spread-0_0007030119516410993,volume_factor-1_892953380292716,max_volatility-0_02747331386561102,position_size-0_019895622250017918,hold_time-29,adjust_interval-9_.html
+Ask-Bid Spread Exploitation - LOSER/EnhancedBidAskSpreadStrategy_min_spread-0_0003978862515839719,max_spread-0_0026085628654042266,volume_factor-0_8144804629965865,max_volatility--0_03765867494049025,position_size-0_003668771043574999,hold_time-1,adjust_interval-4_.html
+Ask-Bid Spread Exploitation - LOSER/EnhancedBidAskSpreadStrategy_min_spread-0_00010281072578615588,max_spread-0_0021474921781196093,volume_factor-0_952784649033322,max_volatility-0_020060554030988748,position_size-0_010780834867465944,hold_time-19,adjust_interval-9_.html
+Ask-Bid Spread Exploitation - LOSER/EnhancedBidAskSpreadStrategy_min_spread-0_00040339673327003436,max_spread-0_0024496364756211083,volume_factor-1_7485824565701615,max_volatility--0_44265945387739714,position_size-0_02614773481380278,hold_time-24,adjust_interval-5_.html
+Ask-Bid Spread Exploitation - LOSER/EnhancedBidAskSpreadStrategy_min_spread-5e-05,max_spread-0_001,volume_factor-0_8,max_volatility-0_02_.html
+Ask-Bid Spread Exploitation - LOSER/EnhancedBidAskSpreadStrategy_min_spread-5e-05,max_spread-0_002,volume_factor-1_0,max_volatility-0_03,position_size-0_02,max_positions-3,hold_time-5_.html
+Ask-Bid Spread Exploitation - LOSER/EnhancedBidAskSpreadStrategy.html
+Bollinger Bands Scalping - LOSER/BB_Scalping_Backtest_BASIC-SL@MIddle.html
+Bollinger Bands Scalping - LOSER/BB_Scalping_Backtest_STOCH+RSI.html
+Bollinger Bands Scalping - LOSER/BB_Scalping_backtrader_58WR.png
+Bollinger Bands Scalping - LOSER/BB_Scalping_Backtrader_100USDtest.png
+Bollinger Bands Scalping - LOSER/Notatki.txt
+Chande Momentum Oscillator - LOSER/opis.txt
+Chande Momentum Oscillator - LOSER/__pycache__/ChandeMomentumOscillator.cpython-312.pyc
+data/bybit_futures_pairs_20241209.csv
+data/bybit-1000PEPEUSDT-1m-20240929-to-20241128.csv
+data/bybit-1000PEPEUSDT-5m-20240929-to-20241128.csv
+data/bybit-ADAUSDT-1m-20240929-to-20241128.csv
+data/bybit-ADAUSDT-5m-20240929-to-20241128.csv
+data/bybit-BTCUSDT-1m-20240607-to-20241204.csv
+data/bybit-BTCUSDT-1m-20240929-to-20241128.csv
+data/bybit-BTCUSDT-5m-20240929-to-20241128.csv
+data/bybit-DOGEUSDT-1m-20240929-to-20241128.csv
+data/bybit-DOGEUSDT-5m-20240929-to-20241128.csv
+data/bybit-ETHUSDT-1m-20240929-to-20241128.csv
+data/bybit-ETHUSDT-5m-20240929-to-20241128.csv
+data/bybit-ETHUSDT-5m-20241125-to-20241209.csv
+data/bybit-ETHUSDT-5m-20241202-to-20241209.csv
+data/bybit-LINKUSDT-1m-20240929-to-20241128.csv
+data/bybit-LINKUSDT-5m-20240929-to-20241128.csv
+data/bybit-SOLUSDT-1m-20240929-to-20241128.csv
+data/bybit-SOLUSDT-5m-20240929-to-20241128.csv
+data/bybit-XRPUSDT-1m-20240929-to-20241128.csv
+data/bybit-XRPUSDT-5m-20240929-to-20241128.csv
+data/tick_data/BTCUSDT/BTCUSDT_ticks_20241209_142704.csv
+data/tick_data/BTCUSDT/BTCUSDT_ticks_20241209_142725.csv
+data imports/bybit_keys.py
+data imports/cdp_api_key.py
+data imports/__pycache__/bybit_keys.cpython-312.pyc
+Double EMA with StochOsc - LOSER/opis.txt
+Double EMA with StochOsc - LOSER/__pycache__/double_EMA_StochOsc.cpython-312.pyc
+GE/requirements.txt
+logs/exchange_handler_20241212_133529.log
+logs/exchange_handler_20241212_133622.log
+logs/exchange_handler_20241212_133803.log
+logs/trading_bot_20241212_133529.log
+logs/trading_bot_20241212_133622.log
+logs/trading_bot_20241212_133803.log
+MA Crossover - LOSER/MA_Crossover_Backtest_All-63WINRATE-OPT-CORRECTED.html
+MA Crossover - LOSER/MA_Crossover_Backtest_RSI_ATR_VOLUME_CCI.html
+MA Crossover - LOSER/MaCrossoverStrategy_BASIC.html
+MA Crossover - LOSER/MaCrossoverStrategy_RSI_ATR_VOLUME.html
+MA Crossover - LOSER/MaCrossoverStrategy_RSI_ATR.html
+MA Crossover - LOSER/MaCrossoverStrategy_RSI.html
+MA Crossover - LOSER/Notatki.txt
+Not obvious chat strategy/opis.txt
+Not obvious chat strategy/__pycache__/chat_strategy.cpython-312.pyc
+OHLCV Data anaylsis/analysis_BTCUSDT_1m_ohlc.html
+OHLCV Data anaylsis/analysis_BTCUSDT_1m_report.txt
+OHLCV Data anaylsis/analysis_BTCUSDT_1m_returns.html
+OHLCV Data anaylsis/analysis_BTCUSDT_1m_temporal.html
+OHLCV Data anaylsis/analysis_BTCUSDT_1m_volatility.html
+OHLCV Data anaylsis/analysis_BTCUSDT_5m_ohlc.html
+OHLCV Data anaylsis/analysis_BTCUSDT_5m_report.txt
+OHLCV Data anaylsis/analysis_BTCUSDT_5m_returns.html
+OHLCV Data anaylsis/analysis_BTCUSDT_5m_temporal.html
+OHLCV Data anaylsis/analysis_BTCUSDT_5m_volatility.html
+OHLCV Data anaylsis/analysis_ETHUSDT_1m_ohlc.html
+OHLCV Data anaylsis/analysis_ETHUSDT_1m_report.txt
+OHLCV Data anaylsis/analysis_ETHUSDT_1m_returns.html
+OHLCV Data anaylsis/analysis_ETHUSDT_1m_temporal.html
+OHLCV Data anaylsis/analysis_ETHUSDT_1m_volatility.html
+OHLCV Data anaylsis/analysis_ETHUSDT_5m_ohlc.html
+OHLCV Data anaylsis/analysis_ETHUSDT_5m_report.txt
+OHLCV Data anaylsis/analysis_ETHUSDT_5m_returns.html
+OHLCV Data anaylsis/analysis_ETHUSDT_5m_temporal.html
+OHLCV Data anaylsis/analysis_ETHUSDT_5m_volatility.html
+OHLCV Data anaylsis/requirements.txt
+Paper Bots/poprawki.txt
+Paper Bots/trading_bot/__pycache__/config.cpython-312.pyc
+Paper Bots/trading_bot/__pycache__/exchange_handler.cpython-312.pyc
+Paper Bots/trading_bot/__pycache__/logger.cpython-312.pyc
+Paper Bots/trading_bot/__pycache__/performance_tracker.cpython-312.pyc
+Paper Bots/trading_bot/__pycache__/trading_bot.cpython-312.pyc
+Paper Bots/trading_bot/strategies/__pycache__/double_ema_stoch.cpython-312.pyc
+Strategies from analysis/opis.txt
+Strategies from analysis/__pycache__/mean_reversion.cpython-312.pyc
+Strategies from analysis/__pycache__/momentum_breakout.cpython-312.pyc
+Strategies from analysis/__pycache__/time_filtered_trend.cpython-312.pyc
+Strategies from analysis/__pycache__/volatility_adaptive_scalping.cpython-312.pyc
+Triple SMA - LOSER/opis.txt
+Triple SMA - LOSER/__pycache__/tripleSMA.cpython-312.pyc
+ukrainskie strategie/opis.txt
+VWAP Breakout Intraday - LOSER/opis.txt
+VWAP Breakout Intraday - LOSER/__pycache__/VWAP_Breakout.cpython-312.pyc
+VWAP Scalping - LOSER/bybit_keys.py
+VWAP Scalping - LOSER/hof_results.json
+VWAP Scalping - LOSER/vwap_bot_external.log
+VWAP Scalping - LOSER/vwap_bot.log
+VWAP Scalping - LOSER/VWAP_Scalping_2nd_Backtest_20241118_154414.png
+VWAP Scalping - LOSER/VWAP_Scalping_2nd_Backtest_20241118_154511.png
+VWAP Scalping - LOSER/VWAP_Scalping_2nd_Backtest_20241118_154557.png
+VWAP Scalping - LOSER/VWAPScalping.html
+VWAP Scalping - LOSER/__pycache__/bybit_keys.cpython-312.pyc
+VWAP Scalping - LOSER/__pycache__/cdp_api_key.cpython-312.pyc
+VWAP Scalping - LOSER/__pycache__/VWAP_Bot.cpython-312.pyc
+VWAP Scalping - LOSER/data/BTCUSDT-1m-1wks-data.csv
+VWAP Scalping - LOSER/data/BTCUSDT-1m-5wks-data.csv
+VWAP Scalping - LOSER/data/BTCUSDT-1m-10wks-data.csv
+VWAP Scalping - LOSER/data/BTCUSDT-1m-20wks-data.csv
+VWAP Scalping - LOSER/data/BTCUSDT-1m-20230901-to-20231130.csv
+VWAP Scalping - LOSER/data/BTCUSDT-5m-1wks-data.csv
+VWAP Scalping - LOSER/data/BTCUSDT-5m-5wks-data.csv
+VWAP Scalping - LOSER/data/BTCUSDT-15m-1wks-data.csv
+VWAP Scalping - LOSER/data/BTCUSDT-15m-5wks-data.csv
+VWAP Scalping - LOSER/data/BTCUSDT-15m-10wks-data.csv
+VWAP Scalping - LOSER/data/bybit_perpetual_markets.csv
+VWAP Scalping - LOSER/data/bybit_spot_markets.csv
+VWAP Scalping - LOSER/data/ETHUSDT-1m-1wks-data.csv
+VWAP Scalping - LOSER/data/ETHUSDT-1m-5wks-data.csv
+VWAP Scalping - LOSER/data/ETHUSDT-1m-10wks-data.csv
+VWAP Scalping - LOSER/data/SOLUSDT-1m-10wks-data.csv
+VWAP Scalping - LOSER/data_imports/cdp_api_key.py
+VWAP Scalping - LOSER/data_imports/custom_data_coinbase.py
+VWAP Scalping - LOSER/VWAP_Bot/requirements.txt
+VWAP Scalping - LOSER/VWAP_Bot/config/config.yaml
+VWAP Scalping - LOSER/VWAP_Bot/config/__pycache__/config.cpython-312.pyc
+VWAP Scalping - LOSER/VWAP_Bot/data/__pycache__/data_handler.cpython-312.pyc
+VWAP Scalping - LOSER/VWAP_Bot/exchange/__pycache__/bybit_interface.cpython-312.pyc
+VWAP Scalping - LOSER/VWAP_Bot/exchange/__pycache__/exchange_interface.cpython-312.pyc
+VWAP Scalping - LOSER/VWAP_Bot/indicators/__pycache__/technical_indicators.cpython-312.pyc
+VWAP Scalping - LOSER/VWAP_Bot/logging_setup/__pycache__/logger.cpython-312.pyc
+VWAP Scalping - LOSER/VWAP_Bot/logging_setup/__pycache__/refresh_console_handler.cpython-312.pyc
+VWAP Scalping - LOSER/VWAP_Bot/risk_management/__pycache__/risk_handler.cpython-312.pyc
+VWAP Scalping - LOSER/VWAP_Bot/strategies/__pycache__/base_strategy.cpython-312.pyc
+VWAP Scalping - LOSER/VWAP_Bot/strategies/__pycache__/strategy_factory.cpython-312.pyc
+VWAP Scalping - LOSER/VWAP_Bot/strategies/__pycache__/vwap_scalping.cpython-312.pyc
+VWAP Scalping - LOSER/VWAP_Bot/utils/__pycache__/helpers.cpython-312.pyc
+Youtube strategies/__pycache__/momentum_breakout.cpython-312.pyc
