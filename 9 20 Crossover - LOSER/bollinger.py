@@ -18,7 +18,7 @@ class BBStrategy(bt.Strategy):
         # Add strategy parameters here
         ("period", 21),
         ("devfactor", 2.0),
-        ("stop_loss", 0.005),
+        ("stop_loss", 0.01),
         ("take_profit", 0.01),
     )
 
@@ -42,7 +42,7 @@ class BBStrategy(bt.Strategy):
             else:
                 position_value = 100.0
 
-            leverage = 10
+            leverage = 1
 
             # Adjust position size according to leverage
             position_size = (position_value * leverage) / current_price
@@ -184,8 +184,8 @@ def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.setcommission(
         commission=0.0002,
-        margin=1.0 / 10,
-        # leverage=50,
+        # margin=1.0 / 10,
+        # leverage=10,
         commtype=bt.CommInfoBase.COMM_PERC
     )
     cerebro.broker.set_slippage_perc(0.0001)
@@ -426,6 +426,7 @@ if __name__ == "__main__":
         r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-5m-20240929-to-20241128.csv",
         r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-1m-20240929-to-20241128.csv",
         r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-5m-20240929-to-20241128.csv",
+        # r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-5m-20241128-to-20250108.csv"
     ]
 
     # Store results for all datasets

@@ -216,5 +216,5 @@ def test_emacross_strategy(file_path: str):
         print("Max Drawdown: N/A")
 
 if __name__ == "__main__":
-    file_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-5m-20240929-to-20241128.csv"
+    file_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-1m-20240929-to-20241128.csv"
     test_emacross_strategy(file_path)

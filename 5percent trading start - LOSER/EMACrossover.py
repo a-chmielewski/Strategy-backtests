@@ -23,7 +23,7 @@ class EMACrossStrategy(bt.Strategy):
         ("stochastic_pfast", 5),
         ("stochastic_pslow", 3),
         ("stop_loss", 0.01),
-        ("take_profit", 0.02),
+        ("take_profit", 0.01),
     )
 
     def __init__(self):

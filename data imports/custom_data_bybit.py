@@ -123,17 +123,13 @@ def get_bybit_data(symbol, timeframe, start_date, end_date=None):
 
 if __name__ == "__main__":
     # Example usage
-    symbol = 'ETH/USDT'
+    symbol = 'SOL/USDT'
     timeframe = '5m'
-    days = 14
     
     try:
-        end_date = datetime.datetime.now(timezone.utc)
-        start_date = end_date - datetime.timedelta(days=days)
-
-        # end_date = datetime.datetime.strptime("2024-11-28 01:00:00", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-        # start_date = datetime.datetime.strptime("2024-09-29 01:00:00", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-        
+        # Set specific date range
+        end_date = datetime.datetime.strptime("2025-01-08 00:00:00", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        start_date = datetime.datetime.strptime("2024-11-28 00:00:00", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         
         df = get_bybit_data(symbol, timeframe, start_date, end_date)
         
