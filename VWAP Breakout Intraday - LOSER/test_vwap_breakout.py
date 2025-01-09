@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import backtrader as bt
 from VWAP_Breakout import VWAP_BreakoutStrategy, VWAP
+import mplfinance as mpf
 
 def load_market_data(file_path: str) -> pd.DataFrame:
     """Load and prepare market data from CSV file"""
@@ -25,7 +26,8 @@ def test_vwap_breakout_strategy(file_path: str):
     # Load market data
     print(f"Loading market data from {file_path}...")
     df = load_market_data(file_path)
-    print(f"Loaded {len(df)} candles from {df['datetime'].iloc[0]} to {df['datetime'].iloc[-1]}")
+    df.set_index('datetime', inplace=True)
+    print(f"Loaded {len(df)} candles from {df.index[0]} to {df.index[-1]}")
     
     # Create Backtrader cerebro instance
     cerebro = bt.Cerebro()
@@ -33,7 +35,7 @@ def test_vwap_breakout_strategy(file_path: str):
     # Add data feed
     data = bt.feeds.PandasData(
         dataname=df,
-        datetime='datetime',
+        datetime=None,  # Already indexed
         open='Open',
         high='High',
         low='Low',
@@ -43,120 +45,172 @@ def test_vwap_breakout_strategy(file_path: str):
     )
     cerebro.adddata(data)
     
-    # Add strategy with default parameters
+    # Add strategy
     cerebro.addstrategy(VWAP_BreakoutStrategy)
     
-    # Run strategy to calculate indicators
-    print("Calculating indicators...")
+    # Add broker settings
+    initial_cash = 100.0
+    cerebro.broker.setcash(initial_cash)
+    cerebro.broker.setcommission(
+        commission=0.0002,
+        margin=1.0/10,
+        leverage=10,
+        commtype=bt.CommInfoBase.COMM_PERC
+    )
+    cerebro.broker.set_slippage_perc(0.0001)
+
+    # Add analyzers
+    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", riskfreerate=0.0)
+    cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
+    cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
+    cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
+    cerebro.addanalyzer(bt.analyzers.TimeReturn, _name="time_return")
+    
+    # Run strategy
+    print("Running strategy...")
     results = cerebro.run()
     strategy = results[0]
     
-    # Extract indicator values for plotting
-    vwap = np.array(strategy.vwap.vwap.array)
-    volume_sma = np.array(strategy.volume_sma.array)
+    # Create plot data
+    df_plot = df.copy()
+    apds = []
     
-    # Calculate relative volume
-    volume = np.array(df['Volume'])
-    relative_volume = np.where(volume_sma != 0, volume / volume_sma, 0)
+    # Plot VWAP
+    vwap_series = pd.Series(index=df_plot.index, data=strategy.vwap.vwap.array)
+    apds.append(mpf.make_addplot(vwap_series, color='blue', width=1, label='VWAP'))
     
-    # Trim any NaN values at the beginning (warmup period)
-    valid_length = len(df)
-    vwap = vwap[-valid_length:]
-    volume_sma = volume_sma[-valid_length:]
+    # Plot trade zones
+    if strategy.trade_exits:
+        for trade in strategy.trade_exits:
+            try:
+                # Get entry/exit data
+                entry_time = trade['entry_time']
+                exit_time = trade['exit_time']
+                entry_price = trade['entry_price']
+                exit_price = trade['exit_price']
+                
+                is_long = 'long' in trade['type']
+                is_successful = (is_long and exit_price > entry_price) or (not is_long and exit_price < entry_price)
+                
+                # Create connecting line between entry and exit
+                trade_line = pd.Series(index=df_plot.index, data=np.nan)
+                mask = (df_plot.index >= entry_time) & (df_plot.index <= exit_time)
+                idx = df_plot.index[mask]
+                
+                if len(idx) >= 2:
+                    trade_line.loc[entry_time] = entry_price
+                    trade_line.loc[exit_time] = exit_price
+                    trade_line.loc[entry_time:exit_time] = np.linspace(
+                        entry_price, 
+                        exit_price, 
+                        len(df_plot.loc[entry_time:exit_time])
+                    )
+                
+                # Add the connecting line
+                color = 'green' if is_successful else 'red'
+                apds.append(mpf.make_addplot(
+                    trade_line,
+                    type='line',
+                    color=color,
+                    width=1.5,
+                    alpha=0.8
+                ))
+
+                # Plot entry point
+                entry_series = pd.Series(index=df_plot.index, data=np.nan)
+                entry_series[entry_time] = entry_price
+                apds.append(
+                    mpf.make_addplot(
+                        entry_series,
+                        type='scatter',
+                        marker='^' if is_long else 'v',
+                        markersize=100,
+                        color='green' if is_long else 'red'
+                    )
+                )
+
+                # Plot exit point
+                exit_series = pd.Series(index=df_plot.index, data=np.nan)
+                exit_series[exit_time] = exit_price
+                apds.append(
+                    mpf.make_addplot(
+                        exit_series,
+                        type='scatter',
+                        marker='x',
+                        markersize=100,
+                        color='green' if is_successful else 'red'
+                    )
+                )
+
+            except Exception as e:
+                print(f"Warning: Could not plot trade: {e}")
+                print(f"Trade data: {trade}")
+                continue
+
+    # Create custom style
+    style = mpf.make_mpf_style(
+        marketcolors=mpf.make_marketcolors(up='green', down='red', inherit=True),
+        gridcolor='gray',
+        gridstyle='--',
+        gridaxis='both'
+    )
+
+    # Plot with returnfig=True to get figure and axes
+    fig, axes = mpf.plot(
+        df_plot,
+        type='candle',
+        style=style,
+        title='VWAP Breakout Strategy Trades',
+        addplot=apds,
+        volume=True,
+        figsize=(20, 10),
+        warn_too_much_data=100000,
+        returnfig=True
+    )
+
+    # Create custom legend
+    legend_elements = [
+        plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='green', 
+                  markersize=10, label='Long Entry'),
+        plt.Line2D([0], [0], marker='v', color='w', markerfacecolor='red', 
+                  markersize=10, label='Short Entry'),
+        plt.Line2D([0], [0], marker='x', color='green', markersize=10, 
+                  label='Profit Exit'),
+        plt.Line2D([0], [0], marker='x', color='red', markersize=10, 
+                  label='Loss Exit'),
+        plt.Line2D([0], [0], color='green', linewidth=3, label='Winning Trade'),
+        plt.Line2D([0], [0], color='red', linewidth=3, label='Losing Trade'),
+        plt.Line2D([0], [0], color='blue', linewidth=2, label='VWAP')
+    ]
     
-    # Create visualization with 4 subplots
-    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(20, 20), height_ratios=[2, 1, 1, 1])
-    
-    # Plot price on top subplot
-    ax1.plot(df.index, df['Close'], label='Price', alpha=0.7, color='black')
-    
-    # Add stop loss and take profit bands
-    sl_band_up = df['Close'] * (1 + strategy.params.stop_loss_pct)
-    sl_band_down = df['Close'] * (1 - strategy.params.stop_loss_pct)
-    tp_band_up = df['Close'] + (df['Close'] * strategy.params.stop_loss_pct * strategy.params.take_profit_ratio)
-    tp_band_down = df['Close'] - (df['Close'] * strategy.params.stop_loss_pct * strategy.params.take_profit_ratio)
-    
-    ax1.plot(df.index, sl_band_up, ':', label=f'Stop Loss Band (+{strategy.params.stop_loss_pct*100}%)', 
-             alpha=0.3, color='red')
-    ax1.plot(df.index, sl_band_down, ':', label=f'Stop Loss Band (-{strategy.params.stop_loss_pct*100}%)', 
-             alpha=0.3, color='red')
-    ax1.plot(df.index, tp_band_up, '--', label=f'Take Profit Band ({strategy.params.take_profit_ratio}x)', 
-             alpha=0.3, color='green')
-    ax1.plot(df.index, tp_band_down, '--', label=f'Take Profit Band (-{strategy.params.take_profit_ratio}x)', 
-             alpha=0.3, color='green')
-    
-    ax1.set_title('Price with Stop Loss and Take Profit Bands')
-    ax1.legend()
-    ax1.grid(True)
-    
-    # Plot VWAP on second subplot
-    ax2.plot(df.index, df['Close'], label='Price', alpha=0.4, color='gray')
-    ax2.plot(df.index, vwap, label=f'VWAP ({strategy.params.vwap_period})', 
-             alpha=0.8, color='blue', linewidth=2)
-    
-    # Add distance from VWAP as shaded area
-    vwap_distance = df['Close'] - vwap
-    ax2.fill_between(df.index, vwap, df['Close'], 
-                     where=vwap_distance >= 0,
-                     color='green', alpha=0.1, label='Above VWAP')
-    ax2.fill_between(df.index, vwap, df['Close'],
-                     where=vwap_distance < 0,
-                     color='red', alpha=0.1, label='Below VWAP')
-    
-    ax2.set_title('VWAP Analysis')
-    ax2.legend()
-    ax2.grid(True)
-    
-    # Plot Volume on third subplot
-    ax3.bar(df.index, df['Volume'], label='Volume', alpha=0.3, color='blue')
-    ax3.plot(df.index, volume_sma, label=f'Volume SMA ({strategy.params.sma_period})', 
-             color='orange', alpha=0.7)
-    ax3.set_title('Volume Analysis')
-    ax3.legend()
-    ax3.grid(True)
-    
-    # Plot Relative Volume on bottom subplot
-    ax4.plot(df.index, relative_volume, label='Relative Volume', color='purple', alpha=0.7)
-    ax4.axhline(y=strategy.params.relative_volume_multiplier, color='red', linestyle='--', 
-                label=f'Threshold ({strategy.params.relative_volume_multiplier}x)', alpha=0.5)
-    ax4.axhline(y=1.0, color='gray', linestyle='--', alpha=0.3)
-    ax4.set_title('Relative Volume Analysis')
-    ax4.legend()
-    ax4.grid(True)
-    
-    plt.tight_layout()
+    axes[0].legend(handles=legend_elements, loc='upper left')
     plt.show()
+
+    # Print strategy statistics
+    print("\nStrategy Statistics:")
+    trades_analysis = strategy.analyzers.trades.get_analysis()
     
-    # Print indicator parameters
-    print("\nIndicator Parameters:")
-    print(f"VWAP Period: {strategy.params.vwap_period}")
-    print(f"Volume SMA Period: {strategy.params.sma_period}")
-    print(f"Stop Loss: {strategy.params.stop_loss_pct*100}%")
-    print(f"Take Profit Ratio: {strategy.params.take_profit_ratio}x")
-    print(f"Relative Volume Multiplier: {strategy.params.relative_volume_multiplier}x")
+    total_trades = trades_analysis.total.closed if hasattr(trades_analysis, 'total') else 0
+    winning_trades = trades_analysis.won.total if hasattr(trades_analysis, 'won') else 0
+    total_pnl = trades_analysis.pnl.net.total if hasattr(trades_analysis, 'pnl') else 0
     
-    # Add VWAP-specific statistics
-    print("\nVWAP Analysis:")
-    vwap_distance_pct = ((df['Close'] - vwap) / vwap) * 100
-    print(f"Average Distance from VWAP: {np.nanmean(abs(vwap_distance_pct)):.2f}%")
-    print(f"Max Distance Above VWAP: {np.nanmax(vwap_distance_pct):.2f}%")
-    print(f"Max Distance Below VWAP: {np.nanmin(vwap_distance_pct):.2f}%")
-    print(f"Time Above VWAP: {np.mean(df['Close'] > vwap)*100:.1f}%")
+    print(f"Total Trades: {total_trades}")
+    print(f"Winning Trades: {winning_trades}")
+    print(f"Win Rate: {(winning_trades/total_trades*100):.2f}%")
+    print(f"Total PnL: {total_pnl:.2f}")
     
-    # Check for any NaN values in indicators
-    print("\nIndicator Data Quality Check:")
-    print(f"NaN in VWAP: {np.isnan(vwap).any()}")
-    print(f"NaN in Volume SMA: {np.isnan(volume_sma).any()}")
-    print(f"NaN in Relative Volume: {np.isnan(relative_volume).any()}")
-    
-    # Print basic statistics
-    print("\nIndicator Statistics:")
-    print(f"VWAP Range: {np.nanmin(vwap):.2f} to {np.nanmax(vwap):.2f}")
-    print(f"Average VWAP: {np.nanmean(vwap):.2f}")
-    print(f"Volume SMA Range: {np.nanmin(volume_sma):.2f} to {np.nanmax(volume_sma):.2f}")
-    print(f"Relative Volume Range: {np.nanmin(relative_volume):.2f} to {np.nanmax(relative_volume):.2f}")
-    print(f"Average Relative Volume: {np.nanmean(relative_volume):.2f}")
-    print(f"High Volume Periods: {np.sum(relative_volume > strategy.params.relative_volume_multiplier)} candles")
+    # Add safe getters for statistics that might be None
+    try:
+        sharpe_ratio = strategy.analyzers.sharpe.get_analysis()['sharperatio']
+        print(f"Sharpe Ratio: {sharpe_ratio:.2f}" if sharpe_ratio is not None else "Sharpe Ratio: N/A")
+    except (KeyError, AttributeError):
+        print("Sharpe Ratio: N/A")
+
+    try:
+        max_drawdown = strategy.analyzers.drawdown.get_analysis().max.drawdown
+        print(f"Max Drawdown: {max_drawdown:.2f}%" if max_drawdown is not None else "Max Drawdown: N/A")
+    except (KeyError, AttributeError):
+        print("Max Drawdown: N/A")
 
 if __name__ == "__main__":
     file_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-5m-20240929-to-20241128.csv"

@@ -51,7 +51,7 @@ class VWAP_BreakoutStrategy(bt.Strategy):
             else:
                 position_value = 100.0
 
-            leverage = 50
+            leverage = 10
 
             # Adjust position size according to leverage
             position_size = (position_value * leverage) / current_price
@@ -69,10 +69,38 @@ class VWAP_BreakoutStrategy(bt.Strategy):
         # Volume SMA for relative volume
         self.volume_sma = bt.indicators.SMA(self.data.volume, period=self.p.sma_period)
         
+        # Track trades for visualization
+        self.trade_exits = []
+        self.active_trades = []
+        
         # Variables to track strategy state
         self.buy_signal_candles = []  # Store candles that closed above VWAP
         self.sell_signal_candles = []  # Store candles that closed below VWAP
-        
+
+    def notify_order(self, order):
+        if order.status == order.Completed:
+            if not order.parent:  # This is an entry order
+                # Record trade start
+                self.active_trades.append({
+                    'entry_time': self.data.datetime.datetime(0),
+                    'entry_price': order.executed.price,
+                    'type': 'long' if order.isbuy() else 'short',
+                    'size': order.executed.size
+                })
+            else:  # This is an exit order
+                if self.active_trades:
+                    trade = self.active_trades.pop()
+                    # Record trade exit
+                    self.trade_exits.append({
+                        'entry_time': trade['entry_time'],
+                        'entry_price': trade['entry_price'],
+                        'exit_time': self.data.datetime.datetime(0),
+                        'exit_price': order.executed.price,
+                        'type': f"{trade['type']}_exit",
+                        'pnl': (order.executed.price - trade['entry_price']) * trade['size'] if trade['type'] == 'long' 
+                              else (trade['entry_price'] - order.executed.price) * trade['size']
+                    })
+
     def next(self):
         """Define trading logic"""
         if len(self.data) < 2:  # Need at least 2 bars
@@ -228,8 +256,8 @@ def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
     cerebro.broker.setcommission(
         commission=0.0002,               # your commission rate
         commtype=bt.CommInfoBase.COMM_PERC,
-        leverage=50,                     # set leverage
-        margin=1.0/50                    # margin requirement (for 50x leverage)
+        # leverage=50,                     # set leverage
+        margin=1.0/10                    # margin requirement (for 50x leverage)
     )
     cerebro.broker.set_slippage_perc(0.0001)
     # Add analyzers

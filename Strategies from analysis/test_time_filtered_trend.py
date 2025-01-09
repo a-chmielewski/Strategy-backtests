@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import backtrader as bt
 from time_filtered_trend import TimeFilteredTrendStrategy
+import mplfinance as mpf
 
 def load_market_data(file_path: str) -> pd.DataFrame:
     """Load and prepare market data from CSV file"""
@@ -25,7 +26,8 @@ def test_time_filtered_trend_strategy(file_path: str):
     # Load market data
     print(f"Loading market data from {file_path}...")
     df = load_market_data(file_path)
-    print(f"Loaded {len(df)} candles from {df['datetime'].iloc[0]} to {df['datetime'].iloc[-1]}")
+    df.set_index('datetime', inplace=True)
+    print(f"Loaded {len(df)} candles from {df.index[0]} to {df.index[-1]}")
     
     # Create Backtrader cerebro instance
     cerebro = bt.Cerebro()
@@ -33,7 +35,7 @@ def test_time_filtered_trend_strategy(file_path: str):
     # Add data feed
     data = bt.feeds.PandasData(
         dataname=df,
-        datetime='datetime',
+        datetime=None,  # Already indexed
         open='Open',
         high='High',
         low='Low',
@@ -43,94 +45,136 @@ def test_time_filtered_trend_strategy(file_path: str):
     )
     cerebro.adddata(data)
     
-    # Add strategy with default parameters
+    # Add strategy
     cerebro.addstrategy(TimeFilteredTrendStrategy)
     
-    # Run strategy to calculate indicators
-    print("Calculating indicators...")
+    # Run strategy
+    print("Running strategy...")
     results = cerebro.run()
     strategy = results[0]
     
-    # Extract indicator values for plotting
-    ema_fast = np.array(strategy.ema_fast.array)
-    ema_slow = np.array(strategy.ema_slow.array)
-    rsi = np.array(strategy.rsi.array)
+    # Create plot data
+    df_plot = df.copy()
+    apds = []
     
-    # Trim any NaN values at the beginning (warmup period)
-    valid_length = len(df)
-    ema_fast = ema_fast[-valid_length:]
-    ema_slow = ema_slow[-valid_length:]
-    rsi = rsi[-valid_length:]
+    # Plot trade zones
+    if strategy.trade_exits:
+        for trade in strategy.trade_exits:
+            try:
+                # Get entry/exit data
+                entry_time = trade['entry_time']
+                exit_time = trade['exit_time']
+                entry_price = trade['entry_price']
+                exit_price = trade['exit_price']
+                
+                is_long = 'long' in trade['type']
+                is_successful = (is_long and exit_price > entry_price) or (not is_long and exit_price < entry_price)
+                
+                # Create connecting line between entry and exit
+                trade_line = pd.Series(index=df_plot.index, data=np.nan)
+                mask = (df_plot.index >= entry_time) & (df_plot.index <= exit_time)
+                idx = df_plot.index[mask]
+                
+                if len(idx) >= 2:
+                    trade_line.loc[entry_time] = entry_price
+                    trade_line.loc[exit_time] = exit_price
+                    trade_line.loc[entry_time:exit_time] = np.linspace(
+                        entry_price, 
+                        exit_price, 
+                        len(df_plot.loc[entry_time:exit_time])
+                    )
+                
+                # Add the connecting line
+                color = 'green' if is_successful else 'red'
+                apds.append(mpf.make_addplot(
+                    trade_line,
+                    type='line',
+                    color=color,
+                    width=1.5,
+                    alpha=0.8
+                ))
+
+                # Plot entry point
+                entry_series = pd.Series(index=df_plot.index, data=np.nan)
+                entry_series[entry_time] = entry_price
+                apds.append(
+                    mpf.make_addplot(
+                        entry_series,
+                        type='scatter',
+                        marker='^' if is_long else 'v',
+                        markersize=100,
+                        color='green' if is_long else 'red'
+                    )
+                )
+
+                # Plot exit point
+                exit_series = pd.Series(index=df_plot.index, data=np.nan)
+                exit_series[exit_time] = exit_price
+                apds.append(
+                    mpf.make_addplot(
+                        exit_series,
+                        type='scatter',
+                        marker='x',
+                        markersize=100,
+                        color='green' if is_successful else 'red'
+                    )
+                )
+
+            except Exception as e:
+                print(f"Warning: Could not plot trade: {e}")
+                print(f"Trade data: {trade}")
+                continue
+
+    # Create custom style
+    style = mpf.make_mpf_style(
+        marketcolors=mpf.make_marketcolors(up='green', down='red', inherit=True),
+        gridcolor='gray',
+        gridstyle='--',
+        gridaxis='both'
+    )
+
+    # Plot with returnfig=True to get figure and axes
+    fig, axes = mpf.plot(
+        df_plot,
+        type='candle',
+        style=style,
+        title='Time Filtered Trend Strategy Trades',
+        addplot=apds,
+        volume=True,
+        figsize=(20, 10),
+        warn_too_much_data=100000,
+        returnfig=True
+    )
+
+    # Create custom legend
+    legend_elements = [
+        plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='green', 
+                  markersize=10, label='Long Entry'),
+        plt.Line2D([0], [0], marker='v', color='w', markerfacecolor='red', 
+                  markersize=10, label='Short Entry'),
+        plt.Line2D([0], [0], marker='x', color='green', markersize=10, 
+                  label='Profit Exit'),
+        plt.Line2D([0], [0], marker='x', color='red', markersize=10, 
+                  label='Loss Exit'),
+        plt.Line2D([0], [0], color='green', linewidth=3, label='Winning Trade'),
+        plt.Line2D([0], [0], color='red', linewidth=3, label='Losing Trade')
+    ]
     
-    # Create time filter mask
-    time_mask = np.zeros(len(df))
-    for i, timestamp in enumerate(df['datetime']):
-        hour = timestamp.hour
-        weekday = timestamp.weekday()
-        if weekday in strategy.trading_days and hour in strategy.trading_hours:
-            time_mask[i] = 1
-    
-    # Create visualization with 3 subplots
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(20, 15), height_ratios=[2, 1, 1])
-    
-    # Plot price and EMAs on top subplot
-    ax1.plot(df.index, df['Close'], label='Price', alpha=0.7, color='black')
-    ax1.plot(df.index, ema_fast, label=f'Fast EMA ({strategy.params.ema_fast_period})', 
-             alpha=0.7, color='blue')
-    ax1.plot(df.index, ema_slow, label=f'Slow EMA ({strategy.params.ema_slow_period})', 
-             alpha=0.7, color='red')
-    
-    ax1.set_title('Price with EMAs')
-    ax1.legend()
-    ax1.grid(True)
-    
-    # Plot RSI on middle subplot
-    ax2.plot(df.index, rsi, label=f'RSI ({strategy.params.rsi_period})', color='purple', alpha=0.7)
-    ax2.axhline(y=strategy.params.rsi_overbought, color='red', linestyle='--', 
-                label=f'Overbought ({strategy.params.rsi_overbought})', alpha=0.5)
-    ax2.axhline(y=strategy.params.rsi_oversold, color='green', linestyle='--', 
-                label=f'Oversold ({strategy.params.rsi_oversold})', alpha=0.5)
-    ax2.axhline(y=50, color='gray', linestyle='--', alpha=0.3)
-    ax2.set_ylim(0, 100)
-    ax2.set_title('Relative Strength Index (RSI)')
-    ax2.legend()
-    ax2.grid(True)
-    
-    # Plot Time Filter on bottom subplot
-    ax3.fill_between(df.index, 0, time_mask, label='Trading Window', 
-                    color='green', alpha=0.3)
-    ax3.set_ylim(-0.1, 1.1)
-    ax3.set_title('Time Filter (Green = Trading Allowed)')
-    ax3.legend()
-    ax3.grid(True)
-    
-    plt.tight_layout()
+    axes[0].legend(handles=legend_elements, loc='upper left')
     plt.show()
+
+    # Print strategy statistics
+    print("\nStrategy Statistics:")
+    print(f"Total Trades: {len(strategy.trade_exits)}")
     
-    # Print indicator parameters
-    print("\nIndicator Parameters:")
-    print(f"Fast EMA Period: {strategy.params.ema_fast_period}")
-    print(f"Slow EMA Period: {strategy.params.ema_slow_period}")
-    print(f"RSI Period: {strategy.params.rsi_period}")
-    print(f"RSI Overbought: {strategy.params.rsi_overbought}")
-    print(f"RSI Oversold: {strategy.params.rsi_oversold}")
-    print("\nTime Filter Settings:")
-    print(f"Trading Hours (UTC): {strategy.trading_hours}")
-    print(f"Trading Days: {strategy.trading_days} (0=Monday, 6=Sunday)")
-    
-    # Check for any NaN values in indicators
-    print("\nIndicator Data Quality Check:")
-    print(f"NaN in Fast EMA: {np.isnan(ema_fast).any()}")
-    print(f"NaN in Slow EMA: {np.isnan(ema_slow).any()}")
-    print(f"NaN in RSI: {np.isnan(rsi).any()}")
-    
-    # Print basic statistics
-    print("\nIndicator Statistics:")
-    print(f"RSI Range: {np.nanmin(rsi):.2f} to {np.nanmax(rsi):.2f}")
-    print(f"Average RSI: {np.nanmean(rsi):.2f}")
-    print(f"EMA Fast Range: {np.nanmin(ema_fast):.2f} to {np.nanmax(ema_fast):.2f}")
-    print(f"EMA Slow Range: {np.nanmin(ema_slow):.2f} to {np.nanmax(ema_slow):.2f}")
-    print(f"Trading Window Coverage: {np.mean(time_mask)*100:.1f}% of total time")
+    if strategy.trade_exits:
+        winning_trades = sum(1 for trade in strategy.trade_exits if trade['pnl'] > 0)
+        total_pnl = sum(trade['pnl'] for trade in strategy.trade_exits)
+        win_rate = (winning_trades / len(strategy.trade_exits)) * 100
+        
+        print(f"Winning Trades: {winning_trades}")
+        print(f"Win Rate: {win_rate:.2f}%")
+        print(f"Total PnL: {total_pnl:.2f}")
 
 if __name__ == "__main__":
     file_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-5m-20240929-to-20241128.csv"

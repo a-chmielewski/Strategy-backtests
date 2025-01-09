@@ -6,7 +6,6 @@ from datetime import datetime
 import backtrader as bt
 from ChandeMomentumOscillator import ChandeMomentumOscillatorStrategy, ChandeMomentumOscillator
 
-
 def load_market_data(file_path: str) -> pd.DataFrame:
     """Load and prepare market data from CSV file"""
     df = pd.read_csv(file_path)
@@ -111,7 +110,7 @@ def test_cmo_strategy(file_path: str):
                     )
                 
                 # Add the connecting line - color based on trade success
-                color = 'green' if is_successful else 'red'
+                color = 'green' if is_successful else 'red'  # Color based on whether trade went in intended direction
                 apds.append(mpf.make_addplot(
                     trade_line,
                     type='line',
@@ -129,7 +128,7 @@ def test_cmo_strategy(file_path: str):
                         type='scatter',
                         marker='^' if is_long else 'v',
                         markersize=100,
-                        color='green' if is_long else 'red'
+                        color='green' if is_long else 'red'  # Entry marker color based on direction
                     )
                 )
 
@@ -142,7 +141,7 @@ def test_cmo_strategy(file_path: str):
                         type='scatter',
                         marker='x',
                         markersize=100,
-                        color='green' if is_successful else 'red'
+                        color='green' if is_successful else 'red'  # Exit marker color based on success
                     )
                 )
 

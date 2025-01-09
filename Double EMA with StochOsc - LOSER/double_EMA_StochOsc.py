@@ -26,6 +26,10 @@ class DoubleEMA_StochOsc_Strategy(bt.Strategy):
 
     def __init__(self):
         """Initialize strategy components"""
+        # Initialize trade tracking
+        self.trade_exits = []
+        self.active_trades = []  # To track ongoing trades for visualization
+        
         # Initialize indicators
         self.ema_slow = bt.indicators.EMA(self.data.close, period=self.p.ema_slow)
         self.ema_fast = bt.indicators.EMA(self.data.close, period=self.p.ema_fast)
@@ -125,6 +129,54 @@ class DoubleEMA_StochOsc_Strategy(bt.Strategy):
                     stopprice=stop_price,
                     limitprice=take_profit,
                 )
+
+    def notify_trade(self, trade):
+        if not trade.isclosed:
+            return
+
+        try:
+            # Get entry and exit prices
+            entry_price = trade.price
+            exit_price = trade.history[-1].price if trade.history else self.data.close[0]
+            pnl = trade.pnl
+            
+            # Store trade exit information for visualization
+            self.trade_exits.append({
+                'datetime': self.data.datetime.datetime(0),
+                'price': exit_price,
+                'type': 'long_exit' if trade.size > 0 else 'short_exit',
+                'pnl': pnl,
+                'entry_price': entry_price
+            })
+            
+        except Exception as e:
+            print(f"Warning: Could not process trade: {str(e)}")
+            print(f"Trade info - Status: {trade.status}, Size: {trade.size}, "
+                  f"Price: {trade.price}, PnL: {trade.pnl}")
+
+    def notify_order(self, order):
+        if order.status == order.Completed:
+            if not order.parent:  # This is an entry order
+                # Record trade start
+                self.active_trades.append({
+                    'entry_time': self.data.datetime.datetime(0),
+                    'entry_price': order.executed.price,
+                    'type': 'long' if order.isbuy() else 'short',
+                    'size': order.executed.size
+                })
+            else:  # This is an exit order
+                if self.active_trades:
+                    trade = self.active_trades.pop()
+                    # Record trade exit
+                    self.trade_exits.append({
+                        'entry_time': trade['entry_time'],
+                        'entry_price': trade['entry_price'],
+                        'exit_time': self.data.datetime.datetime(0),
+                        'exit_price': order.executed.price,
+                        'type': f"{trade['type']}_exit",
+                        'pnl': (order.executed.price - trade['entry_price']) * trade['size'] if trade['type'] == 'long' 
+                              else (trade['entry_price'] - order.executed.price) * trade['size']
+                    })
 
 
 def calculate_sqn(trades):

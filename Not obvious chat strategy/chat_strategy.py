@@ -34,34 +34,42 @@ class VwapIntradayIndicator(bt.Indicator):
         self.previous_date_index: int = -1
         
         # Initialize cumulative values
-        self.cum_vol = 0
-        self.cum_hlc_vol = 0
+        self.cum_vol = 0.0
+        self.cum_hlc_vol = 0.0
 
     def next(self) -> None:
-        # Extract the current date from the datetime field
-        current_datetime = self.data.datetime.datetime()
-        current_date = current_datetime.date()
+        try:
+            # Extract the current date from the datetime field
+            current_datetime = self.data.datetime.datetime()
+            current_date = current_datetime.date()
 
-        # Check if the date has changed
-        if self.current_date != current_date:
-            # Reset cumulative values on new day
-            self.current_date = current_date
-            self.cum_vol = 0
-            self.cum_hlc_vol = 0
+            # Check if the date has changed
+            if self.current_date != current_date:
+                # Reset cumulative values on new day
+                self.current_date = current_date
+                self.cum_vol = 0.0
+                self.cum_hlc_vol = 0.0
 
-        # Get current values
-        current_volume = self.data.volume[0]
-        current_hlc = self.hlc[0]
+            # Get current values
+            current_volume = self.data.volume[0]
+            current_hlc = self.hlc[0]
 
-        # Update cumulative values
-        self.cum_vol += current_volume
-        self.cum_hlc_vol += current_hlc * current_volume
+            # Update cumulative values
+            if not math.isnan(current_volume) and not math.isnan(current_hlc):
+                self.cum_vol += current_volume
+                self.cum_hlc_vol += current_hlc * current_volume
 
-        # Calculate VWAP
-        if self.cum_vol != 0:
-            self.lines.vwap_intraday[0] = self.cum_hlc_vol / self.cum_vol
-        else:
-            self.lines.vwap_intraday[0] = 0.0  # or math.nan
+            # Calculate VWAP with safety check for zero volume
+            if self.cum_vol > 0:
+                self.lines.vwap_intraday[0] = self.cum_hlc_vol / self.cum_vol
+            else:
+                # If no volume, use the typical price as fallback
+                self.lines.vwap_intraday[0] = current_hlc
+
+        except Exception as e:
+            print(f"Error in VWAP calculation: {str(e)}")
+            # Use typical price as fallback in case of any error
+            self.lines.vwap_intraday[0] = self.hlc[0]
 
 class KeltnerChannels(bt.Indicator):
     """Keltner Channels indicator for Backtrader"""
@@ -147,15 +155,16 @@ class StrategyTemplate(bt.Strategy):
         print(f"{dt.isoformat()} | {txt}")
 
     def __init__(self):
+        """Initialize strategy components"""
+        # Initialize trade tracking
+        self.trade_exits = []
+        self.active_trades = []  # To track ongoing trades for visualization
+        
         self.vwap_intraday = VwapIntradayIndicator()
-
-        # Keltner Channels using native Backtrader indicators
         self.keltner = KeltnerChannels(
             period=self.p.keltner_period,
             multiplier=self.p.keltner_multiplier
         )
-
-        # Stochastic RSI using revised native implementation
         self.stochrsi = StochRSI(
             rsi_period=self.p.stochrsi_period,
             stoch_period=self.p.stochrsi_period,
@@ -277,6 +286,54 @@ class StrategyTemplate(bt.Strategy):
                     stopprice=stopprice
                 )
                 # self.log("Short Position Entered")
+
+    def notify_trade(self, trade):
+        if not trade.isclosed:
+            return
+
+        try:
+            # Get entry and exit prices
+            entry_price = trade.price
+            exit_price = trade.history[-1].price if trade.history else self.data.close[0]
+            pnl = trade.pnl
+            
+            # Store trade exit information for visualization
+            self.trade_exits.append({
+                'datetime': self.data.datetime.datetime(0),
+                'price': exit_price,
+                'type': 'long_exit' if trade.size > 0 else 'short_exit',
+                'pnl': pnl,
+                'entry_price': entry_price
+            })
+            
+        except Exception as e:
+            print(f"Warning: Could not process trade: {str(e)}")
+            print(f"Trade info - Status: {trade.status}, Size: {trade.size}, "
+                  f"Price: {trade.price}, PnL: {trade.pnl}")
+
+    def notify_order(self, order):
+        if order.status == order.Completed:
+            if not order.parent:  # This is an entry order
+                # Record trade start
+                self.active_trades.append({
+                    'entry_time': self.data.datetime.datetime(0),
+                    'entry_price': order.executed.price,
+                    'type': 'long' if order.isbuy() else 'short',
+                    'size': order.executed.size
+                })
+            else:  # This is an exit order
+                if self.active_trades:
+                    trade = self.active_trades.pop()
+                    # Record trade exit
+                    self.trade_exits.append({
+                        'entry_time': trade['entry_time'],
+                        'entry_price': trade['entry_price'],
+                        'exit_time': self.data.datetime.datetime(0),
+                        'exit_price': order.executed.price,
+                        'type': f"{trade['type']}_exit",
+                        'pnl': (order.executed.price - trade['entry_price']) * trade['size'] if trade['type'] == 'long' 
+                              else (trade['entry_price'] - order.executed.price) * trade['size']
+                    })
 
 def calculate_sqn(trades):
     """Calculate System Quality Number using individual trade data"""
@@ -649,6 +706,15 @@ if __name__ == "__main__":
             # Load and process data
             data_df = pd.read_csv(data_path)
             data_df["datetime"] = pd.to_datetime(data_df["datetime"])
+            data_df = data_df[data_df["Close"] != 0.0]  # remove rows with zero close
+            data_df = data_df[data_df["Open"] != 0.0]
+            data_df = data_df[data_df["High"] != 0.0]
+            data_df = data_df[data_df["Low"]  != 0.0]
+
+
+            data_df.dropna(subset=["Open", "High", "Low", "Close", "Volume"], inplace=True)
+            data_df.sort_values("datetime", inplace=True)
+
             
             # Run backtest
             results = run_backtest(data_df, verbose=False)
@@ -661,6 +727,8 @@ if __name__ == "__main__":
             
         except Exception as e:
             print(f"Error processing {data_path}: {str(e)}")
+            full_traceback = traceback.format_exc()
+            print(f"Full traceback: {full_traceback}")
             continue
 
     # Sort results by win rate and get top 3

@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 import backtrader as bt
+import mplfinance as mpf
 from tripleSMA import TrippleSMA_Strategy
 
 def load_market_data(file_path: str) -> pd.DataFrame:
@@ -25,7 +26,8 @@ def test_triple_sma_strategy(file_path: str):
     # Load market data
     print(f"Loading market data from {file_path}...")
     df = load_market_data(file_path)
-    print(f"Loaded {len(df)} candles from {df['datetime'].iloc[0]} to {df['datetime'].iloc[-1]}")
+    df.set_index('datetime', inplace=True)
+    print(f"Loaded {len(df)} candles from {df.index[0]} to {df.index[-1]}")
     
     # Create Backtrader cerebro instance
     cerebro = bt.Cerebro()
@@ -33,7 +35,7 @@ def test_triple_sma_strategy(file_path: str):
     # Add data feed
     data = bt.feeds.PandasData(
         dataname=df,
-        datetime='datetime',
+        datetime=None,  # Already indexed
         open='Open',
         high='High',
         low='Low',
@@ -43,89 +45,167 @@ def test_triple_sma_strategy(file_path: str):
     )
     cerebro.adddata(data)
     
-    # Add strategy with default parameters
+    # Add strategy
     cerebro.addstrategy(TrippleSMA_Strategy)
     
-    # Run strategy to calculate indicators
-    print("Calculating indicators...")
+    # Add these broker settings to match EMACrossover.py
+    initial_cash = 100.0
+    cerebro.broker.setcash(initial_cash)
+    cerebro.broker.setcommission(
+        commission=0.0002,
+        margin=1.0/10,
+        commtype=bt.CommInfoBase.COMM_PERC
+    )
+    cerebro.broker.set_slippage_perc(0.0001)
+
+    # Add analyzers
+    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", riskfreerate=0.0)
+    cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
+    cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
+    cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
+    cerebro.addanalyzer(bt.analyzers.TimeReturn, _name="time_return")
+    
+    # Run strategy
+    print("Running strategy...")
     results = cerebro.run()
     strategy = results[0]
     
-    # Extract indicator values for plotting
-    fast_sma = np.array(strategy.fast_sma.array)
-    medium_sma = np.array(strategy.medium_sma.array)
-    slow_sma = np.array(strategy.slow_sma.array)
-    rsi = np.array(strategy.rsi.array)
+    # Create plot data
+    df_plot = df.copy()
+    apds = []
     
-    # Trim any NaN values at the beginning (warmup period)
-    valid_length = len(df)
-    fast_sma = fast_sma[-valid_length:]
-    medium_sma = medium_sma[-valid_length:]
-    slow_sma = slow_sma[-valid_length:]
-    rsi = rsi[-valid_length:]
+    # Plot trade zones
+    if strategy.trade_exits:
+        for trade in strategy.trade_exits:
+            try:
+                # Get entry/exit data
+                entry_time = trade['entry_time']
+                exit_time = trade['exit_time']
+                entry_price = trade['entry_price']
+                exit_price = trade['exit_price']
+                
+                is_long = 'long' in trade['type']
+                is_successful = (is_long and exit_price > entry_price) or (not is_long and exit_price < entry_price)
+                
+                # Create connecting line between entry and exit
+                trade_line = pd.Series(index=df_plot.index, data=np.nan)
+                mask = (df_plot.index >= entry_time) & (df_plot.index <= exit_time)
+                idx = df_plot.index[mask]
+                
+                if len(idx) >= 2:
+                    trade_line.loc[entry_time] = entry_price
+                    trade_line.loc[exit_time] = exit_price
+                    trade_line.loc[entry_time:exit_time] = np.linspace(
+                        entry_price, 
+                        exit_price, 
+                        len(df_plot.loc[entry_time:exit_time])
+                    )
+                
+                # Add the connecting line
+                color = 'green' if is_successful else 'red'
+                apds.append(mpf.make_addplot(
+                    trade_line,
+                    type='line',
+                    color=color,
+                    width=1.5,
+                    alpha=0.8
+                ))
+
+                # Plot entry point
+                entry_series = pd.Series(index=df_plot.index, data=np.nan)
+                entry_series[entry_time] = entry_price
+                apds.append(
+                    mpf.make_addplot(
+                        entry_series,
+                        type='scatter',
+                        marker='^' if is_long else 'v',
+                        markersize=100,
+                        color='green' if is_long else 'red'
+                    )
+                )
+
+                # Plot exit point
+                exit_series = pd.Series(index=df_plot.index, data=np.nan)
+                exit_series[exit_time] = exit_price
+                apds.append(
+                    mpf.make_addplot(
+                        exit_series,
+                        type='scatter',
+                        marker='x',
+                        markersize=100,
+                        color='green' if is_successful else 'red'
+                    )
+                )
+
+            except Exception as e:
+                print(f"Warning: Could not plot trade: {e}")
+                print(f"Trade data: {trade}")
+                continue
+
+    # Create custom style
+    style = mpf.make_mpf_style(
+        marketcolors=mpf.make_marketcolors(up='green', down='red', inherit=True),
+        gridcolor='gray',
+        gridstyle='--',
+        gridaxis='both'
+    )
+
+    # Plot with returnfig=True to get figure and axes
+    fig, axes = mpf.plot(
+        df_plot,
+        type='candle',
+        style=style,
+        title='Triple SMA Strategy Trades',
+        addplot=apds,
+        volume=True,
+        figsize=(20, 10),
+        warn_too_much_data=100000,
+        returnfig=True
+    )
+
+    # Create custom legend
+    legend_elements = [
+        plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='green', 
+                  markersize=10, label='Long Entry'),
+        plt.Line2D([0], [0], marker='v', color='w', markerfacecolor='red', 
+                  markersize=10, label='Short Entry'),
+        plt.Line2D([0], [0], marker='x', color='green', markersize=10, 
+                  label='Profit Exit'),
+        plt.Line2D([0], [0], marker='x', color='red', markersize=10, 
+                  label='Loss Exit'),
+        plt.Line2D([0], [0], color='green', linewidth=3, label='Winning Trade'),
+        plt.Line2D([0], [0], color='red', linewidth=3, label='Losing Trade')
+    ]
     
-    # Create visualization with 2 subplots
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(20, 15), height_ratios=[2, 1])
-    
-    # Plot price and SMAs on top subplot
-    ax1.plot(df.index, df['Close'], label='Price', alpha=0.7, color='black')
-    ax1.plot(df.index, fast_sma, label=f'Fast SMA ({strategy.params.fast_sma})', 
-             alpha=0.7, color='blue')
-    ax1.plot(df.index, medium_sma, label=f'Medium SMA ({strategy.params.medium_sma})', 
-             alpha=0.7, color='orange')
-    ax1.plot(df.index, slow_sma, label=f'Slow SMA ({strategy.params.slow_sma})', 
-             alpha=0.7, color='red')
-    
-    # Add take profit and stop loss levels
-    tp_level_long = df['Close'] * (1 + strategy.params.take_profit)
-    sl_level_long = df['Close'] * (1 - strategy.params.stop_loss)
-    ax1.plot(df.index, tp_level_long, ':', label=f'Take Profit Level (+{strategy.params.take_profit*100}%)', 
-             alpha=0.3, color='green')
-    ax1.plot(df.index, sl_level_long, ':', label=f'Stop Loss Level (-{strategy.params.stop_loss*100}%)', 
-             alpha=0.3, color='red')
-    
-    ax1.set_title('Price with Triple SMAs')
-    ax1.legend()
-    ax1.grid(True)
-    
-    # Plot RSI on bottom subplot
-    ax2.plot(df.index, rsi, label=f'RSI ({strategy.params.rsi})', color='purple', alpha=0.7)
-    ax2.axhline(y=70, color='red', linestyle='--', label='Overbought (70)', alpha=0.5)
-    ax2.axhline(y=30, color='green', linestyle='--', label='Oversold (30)', alpha=0.5)
-    ax2.axhline(y=50, color='gray', linestyle='--', alpha=0.3)
-    ax2.set_ylim(0, 100)
-    ax2.set_title('Relative Strength Index (RSI)')
-    ax2.legend()
-    ax2.grid(True)
-    
-    plt.tight_layout()
+    axes[0].legend(handles=legend_elements, loc='upper left')
     plt.show()
     
-    # Print indicator parameters
-    print("\nIndicator Parameters:")
-    print(f"Fast SMA Period: {strategy.params.fast_sma}")
-    print(f"Medium SMA Period: {strategy.params.medium_sma}")
-    print(f"Slow SMA Period: {strategy.params.slow_sma}")
-    print(f"RSI Period: {strategy.params.rsi}")
-    print(f"Stop Loss: {strategy.params.stop_loss*100}%")
-    print(f"Take Profit: {strategy.params.take_profit*100}%")
+    # Print summary statistics using analyzers
+    trades_analysis = strategy.analyzers.trades.get_analysis()
     
-    # Check for any NaN values in indicators
-    print("\nIndicator Data Quality Check:")
-    print(f"NaN in Fast SMA: {np.isnan(fast_sma).any()}")
-    print(f"NaN in Medium SMA: {np.isnan(medium_sma).any()}")
-    print(f"NaN in Slow SMA: {np.isnan(slow_sma).any()}")
-    print(f"NaN in RSI: {np.isnan(rsi).any()}")
+    total_trades = trades_analysis.total.closed if hasattr(trades_analysis, 'total') else 0
+    winning_trades = trades_analysis.won.total if hasattr(trades_analysis, 'won') else 0
+    total_pnl = trades_analysis.pnl.net.total if hasattr(trades_analysis, 'pnl') else 0
     
-    # Print basic statistics
-    print("\nIndicator Statistics:")
-    print(f"RSI Range: {np.nanmin(rsi):.2f} to {np.nanmax(rsi):.2f}")
-    print(f"Average RSI: {np.nanmean(rsi):.2f}")
-    print("\nSMA Relationships:")
-    print(f"Fast vs Medium Crossovers: {np.sum(np.diff(fast_sma > medium_sma) != 0)}")
-    print(f"Fast vs Slow Crossovers: {np.sum(np.diff(fast_sma > slow_sma) != 0)}")
-    print(f"Average SMA Spread: {np.nanmean(fast_sma - slow_sma):.2f}")
+    print("\nStrategy Summary:")
+    print(f"Total Trades: {total_trades}")
+    print(f"Winning Trades: {winning_trades}")
+    print(f"Win Rate: {(winning_trades/total_trades*100):.2f}%")
+    print(f"Total PnL: {total_pnl:.2f}")
+    
+    # Add safe getters for statistics that might be None
+    try:
+        sharpe_ratio = strategy.analyzers.sharpe.get_analysis()['sharperatio']
+        print(f"Sharpe Ratio: {sharpe_ratio:.2f}" if sharpe_ratio is not None else "Sharpe Ratio: N/A")
+    except (KeyError, AttributeError):
+        print("Sharpe Ratio: N/A")
+
+    try:
+        max_drawdown = strategy.analyzers.drawdown.get_analysis().max.drawdown
+        print(f"Max Drawdown: {max_drawdown:.2f}%" if max_drawdown is not None else "Max Drawdown: N/A")
+    except (KeyError, AttributeError):
+        print("Max Drawdown: N/A")
 
 if __name__ == "__main__":
-    file_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-5m-20240929-to-20241128.csv"
-    test_triple_sma_strategy(file_path) 
+    file_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-5m-20240929-to-20241128.csv"
+    test_triple_sma_strategy(file_path)

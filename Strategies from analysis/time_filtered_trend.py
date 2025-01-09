@@ -15,15 +15,18 @@ class TimeFilteredTrendStrategy(bt.Strategy):
     """Time-Filtered Trend Following Strategy that focuses on following trends during optimal trading windows"""
     
     params = (
-        # Trend indicator
-        ("ema_period", 20),  # EMA period for trend identification
-        
-        # ATR parameters for risk management
-        ("atr_period", 14),  # Period for ATR calculation
-        ("stop_loss_atr", 1.5),  # Stop loss multiplier
-        ("take_profit_atr", 2.0),  # Take profit multiplier
-        ("trailing_atr", 1.0),  # Trailing stop multiplier
-        
+        # Trend indicators
+        ("ema_fast_period", 20),
+        ("ema_slow_period", 50),
+        ("rsi_period", 14),
+        ("rsi_overbought", 70),
+        ("rsi_oversold", 30),
+        ("atr_period", 14),
+        # Risk parameters
+        ("stop_loss", 0.02),    # 2% stop loss
+        ("take_profit", 0.04),  # 4% take profit
+        ("trailing_atr", 0.01),  # 1% trailing ATR
+
         # Trading hours (UTC)
         ("trading_hours", [14, 15, 16]),  # Best performing hours
         ("trading_days", [0, 1, 2]),  # Monday to Wednesday (0-4)
@@ -31,12 +34,41 @@ class TimeFilteredTrendStrategy(bt.Strategy):
 
     def __init__(self):
         """Initialize strategy components"""
-        # Initialize indicators
-        self.ema = bt.indicators.EMA(self.data.close, period=self.p.ema_period)
-        self.atr = bt.indicators.ATR(self.data, period=self.p.atr_period)
+        # Add ATR indicator initialization at the top of __init__
+        self.atr = bt.indicators.ATR(self.data, period=self.p.atr_period)  # 14 is the typical period for ATR
         
-        # Track open orders
-        self.orders = []
+        # Initialize indicators
+        self.ema_fast = bt.indicators.EMA(self.data.close, period=self.p.ema_fast_period)
+        self.ema_slow = bt.indicators.EMA(self.data.close, period=self.p.ema_slow_period)
+        self.rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi_period)
+        
+        # Track trades for visualization
+        self.trade_exits = []
+        self.active_trades = []
+
+    def notify_order(self, order):
+        if order.status == order.Completed:
+            if not order.parent:  # This is an entry order
+                # Record trade start
+                self.active_trades.append({
+                    'entry_time': self.data.datetime.datetime(0),
+                    'entry_price': order.executed.price,
+                    'type': 'long' if order.isbuy() else 'short',
+                    'size': order.executed.size
+                })
+            else:  # This is an exit order
+                if self.active_trades:
+                    trade = self.active_trades.pop()
+                    # Record trade exit
+                    self.trade_exits.append({
+                        'entry_time': trade['entry_time'],
+                        'entry_price': trade['entry_price'],
+                        'exit_time': self.data.datetime.datetime(0),
+                        'exit_price': order.executed.price,
+                        'type': f"{trade['type']}_exit",
+                        'pnl': (order.executed.price - trade['entry_price']) * trade['size'] if trade['type'] == 'long' 
+                              else (trade['entry_price'] - order.executed.price) * trade['size']
+                    })
 
     def is_trading_window(self):
         """Check if current time is within optimal trading window"""
@@ -84,8 +116,8 @@ class TimeFilteredTrendStrategy(bt.Strategy):
             position_size = self.calculate_position_size(current_price)
             
             # Calculate ATR-based stops
-            stop_loss_distance = self.atr[0] * self.p.stop_loss_atr
-            take_profit_distance = self.atr[0] * self.p.take_profit_atr
+            stop_loss_distance = self.atr[0] * self.p.stop_loss
+            take_profit_distance = self.atr[0] * self.p.take_profit
             trail_amount = self.atr[0] * self.p.trailing_atr
             
             # Long entry when price is above EMA

@@ -83,6 +83,10 @@ class VolatilityMeanReversionStrategy(bt.Strategy):
 
     def __init__(self):
         """Initialize strategy indicators"""
+        # Initialize trade tracking
+        self.trade_exits = []
+        self.active_trades = []  # To track ongoing trades for visualization
+        
         # Calculate ATR first since other indicators depend on it
         self.atr = bt.indicators.ATR(
             self.data, 
@@ -184,6 +188,10 @@ class VolatilityMeanReversionStrategy(bt.Strategy):
         if not self.position:
             # Long setup (price below lower band)
             if current_price < self.bb.lines.bot[0]:
+                # print(f"\nLong Entry Signal:")
+                # print(f"Price: {current_price}")
+                # print(f"BB Lower: {self.bb.lines.bot[0]}")
+                
                 stop_price = current_price - (self.atr[0] * self.p.stop_loss_atr_mult)
                 take_profit = current_price + (self.atr[0] * self.p.take_profit_atr_mult)
                 
@@ -201,6 +209,10 @@ class VolatilityMeanReversionStrategy(bt.Strategy):
             
             # Short setup (price above upper band)
             elif current_price > self.bb.lines.top[0]:
+                # print(f"\nShort Entry Signal:")
+                # print(f"Price: {current_price}")
+                # print(f"BB Upper: {self.bb.lines.top[0]}")
+                
                 stop_price = current_price + (self.atr[0] * self.p.stop_loss_atr_mult)
                 take_profit = current_price - (self.atr[0] * self.p.take_profit_atr_mult)
                 
@@ -215,6 +227,42 @@ class VolatilityMeanReversionStrategy(bt.Strategy):
                 # Record the entry time and price
                 self.entry_time = current_time
                 self.entry_price = current_price
+
+    def notify_trade(self, trade):
+        if not trade.isclosed:
+            return
+
+        # print(f"\nTrade Closed:")
+        # print(f"PnL: {trade.pnl}")
+        # print(f"Size: {trade.size}")
+
+    def notify_order(self, order):
+        if order.status == order.Completed:
+            # print(f"\nOrder Completed - Type: {'Entry' if not order.parent else 'Exit'}")
+            if not order.parent:  # This is an entry order
+                # Record trade start
+                self.active_trades.append({
+                    'entry_time': self.data.datetime.datetime(0),
+                    'entry_price': order.executed.price,
+                    'type': 'long' if order.isbuy() else 'short',
+                    'size': order.executed.size
+                })
+                # print(f"Added entry trade: {self.active_trades[-1]}")
+            else:  # This is an exit order
+                if self.active_trades:
+                    trade = self.active_trades.pop()
+                    # Record trade exit
+                    exit_trade = {
+                        'entry_time': trade['entry_time'],
+                        'entry_price': trade['entry_price'],
+                        'exit_time': self.data.datetime.datetime(0),
+                        'exit_price': order.executed.price,
+                        'type': f"{trade['type']}_exit",
+                        'pnl': (order.executed.price - trade['entry_price']) * trade['size'] if trade['type'] == 'long' 
+                              else (trade['entry_price'] - order.executed.price) * trade['size']
+                    }
+                    self.trade_exits.append(exit_trade)
+                    # print(f"Added exit trade: {exit_trade}")
 
 def calculate_sqn(trades):
     """Calculate System Quality Number using individual trade data"""
@@ -643,7 +691,7 @@ if __name__ == "__main__":
         print(f"Win Rate: {result['Win Rate [%]']:.2f}%")
         print(f"Total Trades: {result['# Trades']}")
         print(f"Total Return: {result['Return [%]']:.2f}%")
-        print(f"Expectancy: {result['Expectancy']:.4f}")
+        # print(f"Expectancy: {result['Expectancy']:.4f}")
         print(f"Sharpe Ratio: {result['Sharpe Ratio']:.2f}")
         print(f"Max Drawdown: {result['Max. Drawdown [%]']:.2f}%")
         print(f"Profit Factor: {result['Profit Factor']:.2f}")

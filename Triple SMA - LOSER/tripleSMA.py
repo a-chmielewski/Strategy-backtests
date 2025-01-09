@@ -20,8 +20,8 @@ class TrippleSMA_Strategy(bt.Strategy):
         ("medium_sma", 8),
         ("slow_sma", 13),
         ("rsi", 14),
-        ("stop_loss", 0.005),
-        ("take_profit", 0.01),
+        ("stop_loss", 0.01),
+        ("take_profit", 0.02),
     )
 
     def __init__(self):
@@ -31,6 +31,34 @@ class TrippleSMA_Strategy(bt.Strategy):
         self.medium_sma = bt.indicators.SMA(self.data.close, period=self.params.medium_sma)
         self.slow_sma = bt.indicators.SMA(self.data.close, period=self.params.slow_sma)
         self.rsi = bt.indicators.RSI(self.data.close, period=self.params.rsi)
+        
+        # Track trades for visualization
+        self.trade_exits = []
+        self.active_trades = []
+
+    def notify_order(self, order):
+        if order.status == order.Completed:
+            if not order.parent:  # This is an entry order
+                # Record trade start
+                self.active_trades.append({
+                    'entry_time': self.data.datetime.datetime(0),
+                    'entry_price': order.executed.price,
+                    'type': 'long' if order.isbuy() else 'short',
+                    'size': order.executed.size
+                })
+            else:  # This is an exit order
+                if self.active_trades:
+                    trade = self.active_trades.pop()
+                    # Record trade exit
+                    self.trade_exits.append({
+                        'entry_time': trade['entry_time'],
+                        'entry_price': trade['entry_price'],
+                        'exit_time': self.data.datetime.datetime(0),
+                        'exit_price': order.executed.price,
+                        'type': f"{trade['type']}_exit",
+                        'pnl': (order.executed.price - trade['entry_price']) * trade['size'] if trade['type'] == 'long' 
+                              else (trade['entry_price'] - order.executed.price) * trade['size']
+                    })
 
     def calculate_position_size(self, current_price):
         try:
@@ -41,7 +69,7 @@ class TrippleSMA_Strategy(bt.Strategy):
             else:
                 position_value = 100.0
 
-            leverage = 50
+            leverage = 10
 
             # Adjust position size according to leverage
             position_size = (position_value * leverage) / current_price
@@ -150,8 +178,8 @@ def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
     cerebro.broker.setcommission(
         commission=0.0002,               # your commission rate
         commtype=bt.CommInfoBase.COMM_PERC,
-        leverage=50,                     # set leverage
-        margin=1.0/50                    # margin requirement (for 50x leverage)
+        # leverage=50,                     # set leverage
+        margin=1.0/10                    # margin requirement (for 50x leverage)
     )
     cerebro.broker.set_slippage_perc(0.0001)
     # Add analyzers

@@ -26,6 +26,10 @@ class MomentumBreakoutStrategy(bt.Strategy):
 
     def __init__(self):
         """Initialize strategy indicators"""
+        # Initialize trade tracking
+        self.trade_exits = []
+        self.active_trades = []  # To track ongoing trades for visualization
+        
         # Initialize core indicators
         self.rsi = bt.indicators.RSI(
             self.data.close, 
@@ -51,7 +55,7 @@ class MomentumBreakoutStrategy(bt.Strategy):
             else:
                 position_value = 100.0
 
-            leverage = 50
+            leverage = 10
 
             # Adjust position size according to leverage
             position_size = (position_value * leverage) / current_price
@@ -60,6 +64,42 @@ class MomentumBreakoutStrategy(bt.Strategy):
         except Exception as e:
             print(f"Error in calculate_position_size: {str(e)}")
             return 0
+
+    def notify_trade(self, trade):
+        if not trade.isclosed:
+            return
+
+        # print(f"\nTrade Closed:")
+        # print(f"PnL: {trade.pnl}")
+        # print(f"Size: {trade.size}")
+
+    def notify_order(self, order):
+        if order.status == order.Completed:
+            # print(f"\nOrder Completed - Type: {'Entry' if not order.parent else 'Exit'}")
+            if not order.parent:  # This is an entry order
+                # Record trade start
+                self.active_trades.append({
+                    'entry_time': self.data.datetime.datetime(0),
+                    'entry_price': order.executed.price,
+                    'type': 'long' if order.isbuy() else 'short',
+                    'size': order.executed.size
+                })
+                # print(f"Added entry trade: {self.active_trades[-1]}")
+            else:  # This is an exit order
+                if self.active_trades:
+                    trade = self.active_trades.pop()
+                    # Record trade exit
+                    exit_trade = {
+                        'entry_time': trade['entry_time'],
+                        'entry_price': trade['entry_price'],
+                        'exit_time': self.data.datetime.datetime(0),
+                        'exit_price': order.executed.price,
+                        'type': f"{trade['type']}_exit",
+                        'pnl': (order.executed.price - trade['entry_price']) * trade['size'] if trade['type'] == 'long' 
+                              else (trade['entry_price'] - order.executed.price) * trade['size']
+                    }
+                    self.trade_exits.append(exit_trade)
+                    # print(f"Added exit trade: {exit_trade}")
 
     def next(self):
         """Define trading logic"""
@@ -82,32 +122,36 @@ class MomentumBreakoutStrategy(bt.Strategy):
         if (self.rsi[0] < self.p.rsi_oversold and 
             self.data.close[0] > self.data.close[-1]):
             
-            stop_price = self.data.close[0] - stop_distance
-            target_price = self.data.close[0] + target_distance
+            # Use high/low for stop and target prices
+            stop_price = max(self.data.low[0] - stop_distance, 
+                           self.data.close[0] - stop_distance)
+            target_price = min(self.data.high[0] + target_distance,
+                             self.data.close[0] + target_distance)
             
             self.order = self.buy_bracket(
                 size=position_size,
                 exectype=bt.Order.Market,
                 stopprice=stop_price,
                 limitprice=target_price,
-                trailpercent=trail_percent,
-                valid=None
+                trailpercent=trail_percent
             )
             
         # Short entry conditions
         elif (self.rsi[0] > self.p.rsi_overbought and 
               self.data.close[0] < self.data.close[-1]):
             
-            stop_price = self.data.close[0] + stop_distance
-            target_price = self.data.close[0] - target_distance
+            # Use high/low for stop and target prices
+            stop_price = min(self.data.high[0] + stop_distance,
+                           self.data.close[0] + stop_distance)
+            target_price = max(self.data.low[0] - target_distance,
+                             self.data.close[0] - target_distance)
             
             self.order = self.sell_bracket(
                 size=position_size,
                 exectype=bt.Order.Market,
                 stopprice=stop_price,
                 limitprice=target_price,
-                trailpercent=trail_percent,
-                valid=None
+                trailpercent=trail_percent
             )
 
 def calculate_sqn(trades):
@@ -178,8 +222,8 @@ def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
     cerebro.broker.setcommission(
         commission=0.0002,               # your commission rate
         commtype=bt.CommInfoBase.COMM_PERC,
-        leverage=50,                     # set leverage
-        margin=1.0/50                    # margin requirement (for 50x leverage)
+        # leverage=50,                     # set leverage
+        margin=1.0/10                   # margin requirement (for 50x leverage)
     )
     cerebro.broker.set_slippage_perc(0.0001)
     # Add analyzers

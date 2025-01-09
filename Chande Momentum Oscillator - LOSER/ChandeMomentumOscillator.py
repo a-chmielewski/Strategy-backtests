@@ -254,7 +254,7 @@ def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
     cerebro.adddata(feed)
 
     # Pass strategy parameters via kwargs
-    cerebro.addstrategy(ChandeMomentumOscillator, **kwargs)
+    cerebro.addstrategy(ChandeMomentumOscillatorStrategy, **kwargs)
     
     initial_cash = 100.0
     cerebro.broker.setcash(initial_cash)
