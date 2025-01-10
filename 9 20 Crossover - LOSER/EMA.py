@@ -16,7 +16,7 @@ class EMAStrategy(bt.Strategy):
     params = (
         ("ema_short", 9),
         ("ema_long", 21),
-        ("stop_loss", 0.005),
+        ("stop_loss", 0.01),
         ("take_profit", 0.01),
     )
 
@@ -36,7 +36,7 @@ class EMAStrategy(bt.Strategy):
             else:
                 position_value = 100.0
 
-            leverage = 50
+            leverage = 10
 
             # Adjust position size according to leverage
             position_size = (position_value * leverage) / current_price
@@ -138,8 +138,8 @@ def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
     cerebro.broker.setcommission(
         commission=0.0002,               # your commission rate
         commtype=bt.CommInfoBase.COMM_PERC,
-        leverage=50,                     # set leverage
-        margin=1.0/50                    # margin requirement (for 50x leverage)
+        # leverage=50,                     # set leverage
+        margin=1.0/10                    # margin requirement (for 50x leverage)
     )
     cerebro.broker.set_slippage_perc(0.0001)
     # Add analyzers

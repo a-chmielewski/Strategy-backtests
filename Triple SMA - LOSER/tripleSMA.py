@@ -21,7 +21,7 @@ class TrippleSMA_Strategy(bt.Strategy):
         ("slow_sma", 13),
         ("rsi", 14),
         ("stop_loss", 0.01),
-        ("take_profit", 0.02),
+        ("take_profit", 0.01),
     )
 
     def __init__(self):

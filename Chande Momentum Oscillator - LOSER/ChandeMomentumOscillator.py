@@ -43,12 +43,9 @@ class ChandeMomentumOscillatorStrategy(bt.Strategy):
         ("period", 14),
         ("overbought", 50),    # Overbought level
         ("oversold", -50),     # Oversold level
-        ("stop_loss", 0.005), # 0.5% stop loss
-        ("stop_loss_atr", 1.5), # 1.5x ATR stop loss
-        ("take_profit", 0.01), # 1% take profit
-        ("take_profit_atr", 3), # 3x ATR take profit
+        ("stop_loss", 0.01),   # Static 1% stop loss
+        ("take_profit", 0.01), # Static 1% take profit
         ("ma_period", 50),
-        ("atr_period", 14),
     )
 
     def __init__(self):
@@ -63,7 +60,6 @@ class ChandeMomentumOscillatorStrategy(bt.Strategy):
         self.was_oversold = False
         self.was_overbought = False
         self.ma = bt.indicators.SMA(self.data.close, period=self.params.ma_period)
-        self.atr = bt.indicators.ATR(self.data, period=self.params.atr_period)
 
     def calculate_position_size(self, current_price):
         try:
@@ -108,11 +104,15 @@ class ChandeMomentumOscillatorStrategy(bt.Strategy):
 
             if self.was_oversold and cmo_direction > 0 and self.cmo[0] > self.params.oversold and is_bullish:
                 self.was_oversold = False
+                # Use static 1% levels for stop loss and take profit
+                stop_loss = self.data.close[0] * (1 - self.params.stop_loss)
+                take_profit = self.data.close[0] * (1 + self.params.take_profit)
+                
                 self.buy_bracket(
                     size=position_size,
                     exectype=bt.Order.Market,
-                    limitprice=self.data.close[0] * (1 + self.params.take_profit),
-                    stopprice=self.data.close[0] * (1 - self.params.stop_loss)
+                    limitprice=take_profit,
+                    stopprice=stop_loss
                 )
 
         else:
@@ -125,11 +125,15 @@ class ChandeMomentumOscillatorStrategy(bt.Strategy):
                 self.close()
                 position_size = self.calculate_position_size(self.data.close[0])
                 if position_size > 0:
+                    # Use static 1% levels for stop loss and take profit
+                    stop_loss = self.data.close[0] * (1 + self.params.stop_loss)
+                    take_profit = self.data.close[0] * (1 - self.params.take_profit)
+                    
                     self.sell_bracket(
                         size=position_size,
                         exectype=bt.Order.Market,
-                        limitprice=self.data.close[0] * (1 - self.params.take_profit),
-                        stopprice=self.data.close[0] * (1 + self.params.stop_loss)
+                        limitprice=take_profit,
+                        stopprice=stop_loss
                     )
 
     def notify_trade(self, trade):

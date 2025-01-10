@@ -15,10 +15,8 @@ class VolatilityAdaptiveScalping(bt.Strategy):
     """Volatility-Adaptive Scalping Strategy"""
     
     params = (
-        ("atr_period", 14),  # ATR calculation period
-        ("stop_loss_atr", 1.5),  # Stop loss multiplier of ATR
-        ("take_profit_atr", 2.0),  # Take profit multiplier of ATR
-        ("trailing_atr", 1.0),  # Trailing stop multiplier of ATR
+        ("stop_loss", 0.01),    # Static 1% stop loss
+        ("take_profit", 0.01),  # Static 1% take profit
         ("breakout_period", 20),  # Period for calculating recent highs/lows
         ("rsi_period", 14),  # RSI calculation period
         ("rsi_overbought", 70),  # Overbought RSI threshold
@@ -32,7 +30,7 @@ class VolatilityAdaptiveScalping(bt.Strategy):
     def __init__(self):
         """Initialize strategy components"""
         # ATR indicator for volatility measurement
-        self.atr = bt.indicators.ATR(self.data, period=self.p.atr_period)
+        self.atr = bt.indicators.ATR(self.data, period=14)  # Keep ATR for volatility filtering only
         
         # Track highest high and lowest low for breakout signals
         self.highest_high = bt.indicators.Highest(self.data.high, period=self.p.breakout_period)
@@ -47,12 +45,10 @@ class VolatilityAdaptiveScalping(bt.Strategy):
         # Initialize all position tracking variables
         self.stop_loss = 0.0
         self.take_profit = 0.0
-        self.trailing_stop = 0.0
         
         # Track current position and trade time
         self.current_trade = None
         self.last_trade_time = None
-        self.trailing_order = None
         
         # Store initial cash for drawdown calculations
         self.initial_cash = self.broker.getvalue()
@@ -80,7 +76,7 @@ class VolatilityAdaptiveScalping(bt.Strategy):
             else:
                 position_value = 100.0
 
-            leverage = 50
+            leverage = 10
 
             # Adjust position size according to leverage
             position_size = (position_value * leverage) / current_price
@@ -110,78 +106,34 @@ class VolatilityAdaptiveScalping(bt.Strategy):
             self.close()
             return
 
-        # Update trailing stop if in position
-        if self.position:
-            if self.position.size > 0:  # Long position
-                new_trailing_stop = current_price - (self.atr[0] * self.p.trailing_atr)
-                if new_trailing_stop > self.trailing_stop:
-                    self.trailing_stop = new_trailing_stop
-                    # Update the stop order
-                    self.cancel(self.trailing_order)
-                    self.trailing_order = self.sell(
-                        size=self.position.size,
-                        price=self.trailing_stop,
-                        exectype=bt.Order.Stop
-                    )
-                    
-                if current_price <= self.trailing_stop:
-                    self.close()
-                    
-            else:  # Short position
-                new_trailing_stop = current_price + (self.atr[0] * self.p.trailing_atr)
-                if new_trailing_stop < self.trailing_stop:
-                    self.trailing_stop = new_trailing_stop
-                    # Update the stop order
-                    self.cancel(self.trailing_order)
-                    self.trailing_order = self.buy(
-                        size=self.position.size,
-                        price=self.trailing_stop,
-                        exectype=bt.Order.Stop
-                    )
-                    
-                if current_price >= self.trailing_stop:
-                    self.close()
-                
-            return
-        
         # Entry logic with RSI and Trend confirmation
         position_size = self.calculate_position_size(current_price)
         
         # Long entry with RSI and Trend confirmation
         if (current_price > self.highest_high[-1]) and (current_rsi < self.p.rsi_overbought) and (current_price > current_sma):
-            self.stop_loss = current_price - (self.atr[0] * self.p.stop_loss_atr)
-            self.take_profit = current_price + (self.atr[0] * self.p.take_profit_atr)
-            self.trailing_stop = self.stop_loss
+            # Calculate static stop loss and take profit levels
+            stop_loss = current_price * (1 - self.p.stop_loss)
+            take_profit = current_price * (1 + self.p.take_profit)
 
-            self.buy_bracket(size=position_size, exectype=bt.Order.Market, stopprice=self.stop_loss, limitprice=self.take_profit, trailamount=self.atr[0] * self.p.trailing_atr)
+            self.buy_bracket(
+                size=position_size,
+                exectype=bt.Order.Market,
+                stopprice=stop_loss,
+                limitprice=take_profit
+            )
             
-            # self.buy(size=position_size, exectype=bt.Order.Market)
-            # self.sell(size=position_size, price=self.stop_loss, exectype=bt.Order.Stop)
-            # self.sell(size=position_size, price=self.take_profit, exectype=bt.Order.Limit)
-            # self.trailing_order = self.sell(
-            #     size=position_size,
-            #     price=self.stop_loss,
-            #     exectype=bt.Order.Stop
-            # )
-            # Similarly set for take_profit
         # Short entry with RSI and Trend confirmation
         elif (current_price < self.lowest_low[-1]) and (current_rsi > self.p.rsi_oversold) and (current_price < current_sma):
-            self.stop_loss = current_price + (self.atr[0] * self.p.stop_loss_atr)
-            self.take_profit = current_price - (self.atr[0] * self.p.take_profit_atr)
-            self.trailing_stop = self.stop_loss
+            # Calculate static stop loss and take profit levels
+            stop_loss = current_price * (1 + self.p.stop_loss)
+            take_profit = current_price * (1 - self.p.take_profit)
 
-            self.sell_bracket(size=position_size, exectype=bt.Order.Market, stopprice=self.stop_loss, limitprice=self.take_profit, trailamount=self.atr[0] * self.p.trailing_atr)
-            
-            # self.sell(size=position_size, exectype=bt.Order.Market)
-            # self.buy(size=position_size, price=self.stop_loss, exectype=bt.Order.Stop)
-            # self.buy(size=position_size, price=self.take_profit, exectype=bt.Order.Limit)
-
-            # self.trailing_order = self.buy(
-            #     size=position_size,
-            #     price=self.stop_loss,
-            #     exectype=bt.Order.Stop
-            # )
-
+            self.sell_bracket(
+                size=position_size,
+                exectype=bt.Order.Market,
+                stopprice=stop_loss,
+                limitprice=take_profit
+            )
 
     def notify_trade(self, trade):
         """Track trade status"""
@@ -189,7 +141,6 @@ class VolatilityAdaptiveScalping(bt.Strategy):
             self.current_trade = None
             self.stop_loss = 0.0  # Changed from None to 0.0
             self.take_profit = 0.0  # Changed from None to 0.0
-            self.trailing_stop = 0.0  # Changed from None to 0.0
             self.last_trade_time = self.data.datetime.datetime(0)
 
 def calculate_sqn(trades):
@@ -260,8 +211,8 @@ def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
     cerebro.broker.setcommission(
         commission=0.0002,               # your commission rate
         commtype=bt.CommInfoBase.COMM_PERC,
-        leverage=50,                     # set leverage
-        margin=1.0/50                    # margin requirement (for 50x leverage)
+        # leverage=50,                     # set leverage
+        margin=1.0/10                    # margin requirement (for 50x leverage)
     )
     cerebro.broker.set_slippage_perc(0.0001)
     # Add analyzers
@@ -419,13 +370,15 @@ def evaluate(individual, data):
     """Evaluate individual's fitness during optimization"""
     try:
         params = {
-            "atr_period": individual[0],
-            "stop_loss_atr": individual[1] / 10,  # Convert to decimal (e.g., 15 -> 1.5)
-            "take_profit_atr": individual[2] / 10,  # Convert to decimal (e.g., 20 -> 2.0)
-            "trailing_atr": individual[3] / 10,     # Convert to decimal (e.g., 10 -> 1.0)
-            "breakout_period": individual[4],
-            "min_atr": individual[5],
-            "max_atr": individual[6]
+            "stop_loss": individual[0],
+            "take_profit": individual[1],
+            "breakout_period": individual[2],
+            "rsi_period": individual[3],
+            "rsi_overbought": individual[4],
+            "rsi_oversold": individual[5],
+            "sma_period": individual[6],
+            "min_atr": individual[7],
+            "max_atr": individual[8]
         }
 
         results = run_backtest(data, verbose=False, **params)
@@ -464,19 +417,22 @@ def optimize_strategy(data, pop_size=50, generations=30):
     toolbox = base.Toolbox()
 
     # Register genetic operators with parameter ranges
-    toolbox.register("atr_period", random.randint, 10, 20)        # ATR period
-    toolbox.register("stop_loss_atr", random.randint, 10, 25)     # Stop loss multiplier (1.0-2.5)
-    toolbox.register("take_profit_atr", random.randint, 15, 30)   # Take profit multiplier (1.5-3.0)
-    toolbox.register("trailing_atr", random.randint, 8, 20)       # Trailing stop multiplier (0.8-2.0)
-    toolbox.register("breakout_period", random.randint, 10, 30)   # Breakout period
-    toolbox.register("min_atr", random.randint, 10, 50)          # Minimum ATR value
-    toolbox.register("max_atr", random.randint, 100, 200)        # Maximum ATR value
+    toolbox.register("stop_loss", random.uniform, 0.005, 0.02)
+    toolbox.register("take_profit", random.uniform, 0.005, 0.02)
+    toolbox.register("breakout_period", random.randint, 10, 30)
+    toolbox.register("rsi_period", random.randint, 10, 20)
+    toolbox.register("rsi_overbought", random.randint, 60, 80)
+    toolbox.register("rsi_oversold", random.randint, 20, 40)
+    toolbox.register("sma_period", random.randint, 30, 70)
+    toolbox.register("min_atr", random.randint, 10, 50)
+    toolbox.register("max_atr", random.randint, 100, 200)
 
     # Create individual and population
     toolbox.register("individual", tools.initCycle, creator.Individual,
-                     (toolbox.atr_period, toolbox.stop_loss_atr, 
-                      toolbox.take_profit_atr, toolbox.trailing_atr,
-                      toolbox.breakout_period, toolbox.min_atr,
+                     (toolbox.stop_loss, toolbox.take_profit, 
+                      toolbox.breakout_period, toolbox.rsi_period,
+                      toolbox.rsi_overbought, toolbox.rsi_oversold,
+                      toolbox.sma_period, toolbox.min_atr,
                       toolbox.max_atr))
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
@@ -487,23 +443,27 @@ def optimize_strategy(data, pop_size=50, generations=30):
                 # Add Gaussian noise and round to nearest integer
                 individual[i] = int(round(individual[i] + random.gauss(mu, sigma)))
                 # Ensure values stay within reasonable bounds
-                if i == 0:  # atr_period
-                    individual[i] = max(10, min(20, individual[i]))
-                elif i == 1:  # stop_loss_atr
-                    individual[i] = max(10, min(25, individual[i]))
-                elif i == 2:  # take_profit_atr
-                    individual[i] = max(15, min(30, individual[i]))
-                elif i == 3:  # trailing_atr
-                    individual[i] = max(8, min(20, individual[i]))
-                elif i == 4:  # breakout_period
+                if i == 0:  # stop_loss
+                    individual[i] = max(0.005, min(0.02, individual[i]))
+                elif i == 1:  # take_profit
+                    individual[i] = max(0.005, min(0.02, individual[i]))
+                elif i == 2:  # breakout_period
                     individual[i] = max(10, min(30, individual[i]))
-                elif i == 5:  # min_atr
-                    individual[i] = max(30, min(80, individual[i]))
-                elif i == 6:  # max_atr
-                    individual[i] = max(150, min(250, individual[i]))
+                elif i == 3:  # rsi_period
+                    individual[i] = max(10, min(20, individual[i]))
+                elif i == 4:  # rsi_overbought
+                    individual[i] = max(60, min(80, individual[i]))
+                elif i == 5:  # rsi_oversold
+                    individual[i] = max(20, min(40, individual[i]))
+                elif i == 6:  # sma_period
+                    individual[i] = max(30, min(70, individual[i]))
+                elif i == 7:  # min_atr
+                    individual[i] = max(10, min(50, individual[i]))
+                elif i == 8:  # max_atr
+                    individual[i] = max(100, min(200, individual[i]))
                     # Ensure max_atr > min_atr
-                    if individual[6] <= individual[5]:
-                        individual[6] = individual[5] + 50
+                    if individual[8] <= individual[7]:
+                        individual[8] = individual[7] + 50
         return individual,
 
     # Register genetic operators
@@ -540,13 +500,15 @@ def optimize_strategy(data, pop_size=50, generations=30):
     # Get best parameters
     best_individual = hof[0]
     best_params = {
-        "atr_period": best_individual[0],
-        "stop_loss_atr": best_individual[1] / 10,
-        "take_profit_atr": best_individual[2] / 10,
-        "trailing_atr": best_individual[3] / 10,
-        "breakout_period": best_individual[4],
-        "min_atr": best_individual[5],
-        "max_atr": best_individual[6]
+        "stop_loss": best_individual[0],
+        "take_profit": best_individual[1],
+        "breakout_period": best_individual[2],
+        "rsi_period": best_individual[3],
+        "rsi_overbought": best_individual[4],
+        "rsi_oversold": best_individual[5],
+        "sma_period": best_individual[6],
+        "min_atr": best_individual[7],
+        "max_atr": best_individual[8]
     }
 
     return best_params, logbook 

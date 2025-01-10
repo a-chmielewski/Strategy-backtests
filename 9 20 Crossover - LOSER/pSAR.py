@@ -18,7 +18,7 @@ class PSARStrategy(bt.Strategy):
         # parabolic SAR
         ("sar_step", 0.02),
         ("sar_max", 0.2),
-        ("stop_loss", 0.005),
+        ("stop_loss", 0.01),
         ("take_profit", 0.01),
     )
 
@@ -36,7 +36,7 @@ class PSARStrategy(bt.Strategy):
             else:
                 position_value = 100.0
 
-            leverage = 5
+            leverage = 10
 
             # Adjust position size according to leverage
             position_size = (position_value * leverage) / current_price
@@ -141,8 +141,8 @@ def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
     cerebro.broker.setcommission(
         commission=0.0002,               # your commission rate
         commtype=bt.CommInfoBase.COMM_PERC,
-        leverage=50,                     # set leverage
-        margin=1.0/50                    # margin requirement (for 50x leverage)
+        # leverage=10,                     # set leverage
+        margin=1.0/10                    # margin requirement (for 50x leverage)
     )
     cerebro.broker.set_slippage_perc(0.0001)
     # Add analyzers
@@ -398,22 +398,22 @@ def optimize_strategy(data, pop_size=50, generations=30):
 
 if __name__ == "__main__":
     # Load and preprocess data
-    # data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-1000PEPEUSDT-1m-20240929-to-20241128.csv"
-    # data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-1000PEPEUSDT-5m-20240929-to-20241128.csv"
-    # data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ADAUSDT-1m-20240929-to-20241128.csv"
-    # data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ADAUSDT-5m-20240929-to-20241128.csv"
-    # data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-1m-20240929-to-20241128.csv"
+    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-1000PEPEUSDT-1m-20240929-to-20241128.csv"
+    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-1000PEPEUSDT-5m-20240929-to-20241128.csv"
+    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ADAUSDT-1m-20240929-to-20241128.csv"
+    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ADAUSDT-5m-20240929-to-20241128.csv"
+    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-1m-20240929-to-20241128.csv"
     data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-5m-20240929-to-20241128.csv"
-    # data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-DOGEUSDT-1m-20240929-to-20241128.csv"
-    # data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-DOGEUSDT-5m-20240929-to-20241128.csv"
-    # data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ETHUSDT-1m-20240929-to-20241128.csv"
-    # data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ETHUSDT-5m-20240929-to-20241128.csv"
-    # data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-1m-20240929-to-20241128.csv"
-    # data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-5m-20240929-to-20241128.csv"
-    # data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-1m-20240929-to-20241128.csv"
-    # data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-5m-20240929-to-20241128.csv"
-    # data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-1m-20240929-to-20241128.csv"
-    # data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-5m-20240929-to-20241128.csv"
+    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-DOGEUSDT-1m-20240929-to-20241128.csv"
+    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-DOGEUSDT-5m-20240929-to-20241128.csv"
+    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ETHUSDT-1m-20240929-to-20241128.csv"
+    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ETHUSDT-5m-20240929-to-20241128.csv"
+    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-1m-20240929-to-20241128.csv"
+    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-5m-20240929-to-20241128.csv"
+    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-1m-20240929-to-20241128.csv"
+    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-5m-20240929-to-20241128.csv"
+    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-1m-20240929-to-20241128.csv"
+    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-5m-20240929-to-20241128.csv"
     data_df = pd.read_csv(data_path)
     data_df["datetime"] = pd.to_datetime(data_df["datetime"])
     

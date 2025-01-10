@@ -145,7 +145,7 @@ class StrategyTemplate(bt.Strategy):
         ("stochrsi_period", 14),
         ("stochrsi_k", 3),
         ("stochrsi_d", 3),
-        ("stop_loss_pct", 0.005),
+        ("stop_loss_pct", 0.01),
         ("take_profit_ratio", 0.01),
     )
 
@@ -181,7 +181,7 @@ class StrategyTemplate(bt.Strategy):
             else:
                 position_value = 100.0
 
-            leverage = 50
+            leverage = 10
 
             # Adjust position size according to leverage
             position_size = (position_value * leverage) / current_price
@@ -403,8 +403,8 @@ def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
     cerebro.broker.setcommission(
         commission=0.0002,               # your commission rate
         commtype=bt.CommInfoBase.COMM_PERC,
-        leverage=50,                     # set leverage
-        margin=1.0/50                    # margin requirement (for 50x leverage)
+        # leverage=50,                     # set leverage
+        margin=1.0/10                    # margin requirement (for 50x leverage)
     )
     cerebro.broker.set_slippage_perc(0.0001)
     # Add analyzers
@@ -739,6 +739,7 @@ if __name__ == "__main__":
     for i, result in enumerate(sorted_results, 1):
         print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
         print(f"Win Rate: {result['Win Rate [%]']:.2f}%")
+        print(f"Final Equity: {result['Equity Final [$]']:.2f}")
         print(f"Total Trades: {result['# Trades']}")
         print(f"Total Return: {result['Return [%]']:.2f}%")
         print(f"Expectancy: {result['Expectancy']:.4f}")

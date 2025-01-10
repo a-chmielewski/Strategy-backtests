@@ -18,10 +18,8 @@ class MomentumBreakoutStrategy(bt.Strategy):
         ('rsi_period', 14),        # RSI lookback period
         ('rsi_oversold', 30),      # RSI oversold threshold
         ('rsi_overbought', 70),    # RSI overbought threshold
-        ('atr_period', 14),        # ATR period for volatility measurement
-        ('atr_stop_multiplier', 1.5),  # Stop loss multiplier
-        ('atr_target_multiplier', 2.0), # Take profit multiplier
-        ('atr_trail_multiplier', 1.0),  # Trailing stop multiplier
+        ('stop_loss', 0.01),       # Static 1% stop loss
+        ('take_profit', 0.01),     # Static 1% take profit
     )
 
     def __init__(self):
@@ -34,10 +32,6 @@ class MomentumBreakoutStrategy(bt.Strategy):
         self.rsi = bt.indicators.RSI(
             self.data.close, 
             period=self.p.rsi_period
-        )
-        self.atr = bt.indicators.ATR(
-            self.data, 
-            period=self.p.atr_period
         )
         
         # Track order status
@@ -111,47 +105,35 @@ class MomentumBreakoutStrategy(bt.Strategy):
         
         if not position_size:
             return
-
-        # Calculate stop loss, take profit, and trailing stop levels based on ATR
-        atr_value = self.atr[0]
-        stop_distance = atr_value * self.p.atr_stop_multiplier
-        target_distance = atr_value * self.p.atr_target_multiplier
-        trail_percent = (atr_value * self.p.atr_trail_multiplier) / self.data.close[0] * 100
         
         # Long entry conditions
         if (self.rsi[0] < self.p.rsi_oversold and 
             self.data.close[0] > self.data.close[-1]):
             
-            # Use high/low for stop and target prices
-            stop_price = max(self.data.low[0] - stop_distance, 
-                           self.data.close[0] - stop_distance)
-            target_price = min(self.data.high[0] + target_distance,
-                             self.data.close[0] + target_distance)
+            # Calculate static stop loss and take profit levels
+            stop_price = self.data.close[0] * (1 - self.p.stop_loss)
+            take_profit = self.data.close[0] * (1 + self.p.take_profit)
             
             self.order = self.buy_bracket(
                 size=position_size,
                 exectype=bt.Order.Market,
                 stopprice=stop_price,
-                limitprice=target_price,
-                trailpercent=trail_percent
+                limitprice=take_profit
             )
             
         # Short entry conditions
         elif (self.rsi[0] > self.p.rsi_overbought and 
               self.data.close[0] < self.data.close[-1]):
             
-            # Use high/low for stop and target prices
-            stop_price = min(self.data.high[0] + stop_distance,
-                           self.data.close[0] + stop_distance)
-            target_price = max(self.data.low[0] - target_distance,
-                             self.data.close[0] - target_distance)
+            # Calculate static stop loss and take profit levels
+            stop_price = self.data.close[0] * (1 + self.p.stop_loss)
+            take_profit = self.data.close[0] * (1 - self.p.take_profit)
             
             self.order = self.sell_bracket(
                 size=position_size,
                 exectype=bt.Order.Market,
                 stopprice=stop_price,
-                limitprice=target_price,
-                trailpercent=trail_percent
+                limitprice=take_profit
             )
 
 def calculate_sqn(trades):

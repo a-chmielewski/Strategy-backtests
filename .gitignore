@@ -153,3 +153,6 @@ VWAP Scalping - LOSER/VWAP_Bot/strategies/__pycache__/vwap_scalping.cpython-312.
 VWAP Scalping - LOSER/VWAP_Bot/utils/__pycache__/helpers.cpython-312.pyc
 Youtube strategies/__pycache__/momentum_breakout.cpython-312.pyc
 data/bybit-SOLUSDT-5m-20241128-to-20250108.csv
+data/bybit-BTCUSDT-5m-20240714-to-20250110.csv
+data/bybit-ETHUSDT-5m-20240714-to-20250110.csv
+data/bybit-XRPUSDT-5m-20240714-to-20250110.csv
