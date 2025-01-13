@@ -234,7 +234,7 @@ def run_backtest(data, verbose=True, **kwargs):
     cerebro.broker.setcommission(
         commission=0.0002,
         margin=1.0 / 10,
-        # leverage=50,
+        # leverage=10,
         commtype=bt.CommInfoBase.COMM_PERC
     )
     cerebro.broker.set_slippage_perc(0.0001)

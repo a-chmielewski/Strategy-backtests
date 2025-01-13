@@ -70,7 +70,7 @@ class ChandeMomentumOscillatorStrategy(bt.Strategy):
             else:
                 position_value = 100.0
 
-            leverage = 10
+            leverage = 1
 
             # Adjust position size according to leverage
             position_size = (position_value * leverage) / current_price
@@ -265,7 +265,7 @@ def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
     cerebro.broker.setcommission(
         commission=0.0002,
         commtype=bt.CommInfoBase.COMM_PERC,
-        margin=1.0/10,
+        margin=1.0/1,
     )
     cerebro.broker.set_slippage_perc(0.0001)
     # Add analyzers

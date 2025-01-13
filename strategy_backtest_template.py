@@ -272,142 +272,69 @@ def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
 
     return formatted_results
 
-def evaluate(individual, data):
-    """Evaluate individual's fitness during optimization"""
-    try:
-        params = {
-            "vwap_period": individual[0],
-            "sma_period": individual[1],
-            "stop_loss_pct": individual[2] / 1000,  # Convert to percentage (e.g., 5 -> 0.005)
-            "take_profit_ratio": individual[3] / 1000  # Convert to percentage (e.g., 10 -> 0.01)
-        }
-
-        results = run_backtest(data, verbose=False, **params)
-        
-        # Calculate fitness based on multiple metrics
-        ret = results.get("Return [%]", 0)
-        sqn = results.get("SQN", 0)
-        sharpe = results.get("Sharpe Ratio", 0)
-        trades = results.get("# Trades", 0)
-        win_rate = results.get("Win Rate [%]", 0)
-        
-        # Penalize strategies with too few trades
-        if trades < 10:
-            return (-np.inf,)
-            
-        # Combine metrics into a single fitness score
-        fitness = (ret * 0.4) + (sqn * 0.2) + (sharpe * 0.2) + (win_rate * 0.2)
-        
-        return (fitness,)
-    except Exception as e:
-        print(f"Error evaluating individual: {str(e)}")
-        return (-np.inf,)
-
-def optimize_strategy(data, pop_size=50, generations=30):
-    """Optimize strategy parameters using genetic algorithm"""
-    
-    # Create fitness and individual types
-    creator.create("FitnessMax", base.Fitness, weights=(1.0,))
-    creator.create("Individual", list, fitness=creator.FitnessMax)
-
-    toolbox = base.Toolbox()
-
-    # Register genetic operators with parameter ranges
-    toolbox.register("vwap_period", random.randint, 5, 30)  # VWAP period
-    toolbox.register("sma_period", random.randint, 10, 50)  # Volume SMA period
-    toolbox.register("stop_loss_pct", random.randint, 3, 20)    # Stop loss in 0.1% (30 -> 3%)
-    toolbox.register("take_profit_ratio", random.randint, 6, 40)  # Take profit in 0.1% (60 -> 6%)
-
-    # Create individual and population
-    toolbox.register("individual", tools.initCycle, creator.Individual,
-                     (toolbox.vwap_period, toolbox.sma_period, 
-                      toolbox.stop_loss_pct, toolbox.take_profit_ratio))
-    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
-
-    # Custom mutation operator that ensures integer values
-    def custom_mutate(individual, mu, sigma, indpb):
-        for i in range(len(individual)):
-            if random.random() < indpb:
-                # Add Gaussian noise and round to nearest integer
-                individual[i] = int(round(individual[i] + random.gauss(mu, sigma)))
-                # Ensure values stay within reasonable bounds
-                if i == 0:  # vwap_period
-                    individual[i] = max(5, min(30, individual[i]))
-                elif i == 1:  # sma_period
-                    individual[i] = max(10, min(50, individual[i]))
-                elif i == 2:  # stop_loss_pct
-                    individual[i] = max(3, min(20, individual[i]))
-                elif i == 3:  # take_profit_ratio
-                    individual[i] = max(6, min(40, individual[i]))
-        return individual,
-
-    # Register genetic operators
-    evaluate_partial = partial(evaluate, data=data)
-    toolbox.register("evaluate", evaluate_partial)
-    toolbox.register("mate", tools.cxTwoPoint)
-    toolbox.register("mutate", custom_mutate, mu=0, sigma=1, indpb=0.2)
-    toolbox.register("select", tools.selTournament, tournsize=3)
-
-    # Initialize statistics
-    stats = tools.Statistics(lambda ind: ind.fitness.values)
-    stats.register("avg", np.mean)
-    stats.register("min", np.min)
-    stats.register("max", np.max)
-    stats.register("std", np.std)
-
-    # Create hall of fame
-    hof = tools.HallOfFame(1)
-
-    # Run optimization
-    with multiprocessing.Pool() as pool:
-        toolbox.register("map", pool.map)
-        pop = toolbox.population(n=pop_size)
-        final_pop, logbook = algorithms.eaSimple(
-            pop, toolbox,
-            cxpb=0.7,  # Crossover probability
-            mutpb=0.2,  # Mutation probability
-            ngen=generations,
-            stats=stats,
-            halloffame=hof,
-            verbose=True
-        )
-
-    # Get best parameters
-    best_individual = hof[0]
-    best_params = {
-        "vwap_period": best_individual[0],
-        "sma_period": best_individual[1],
-        "stop_loss_pct": best_individual[2] / 1000,
-        "take_profit_ratio": best_individual[3] / 1000
-    }
-
-    return best_params, logbook
-
 if __name__ == "__main__":
-    # Load and preprocess data
-    data_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-5m-20240928-to-20241127.csv"
-    data_df = pd.read_csv(data_path)
-    data_df["datetime"] = pd.to_datetime(data_df["datetime"])
-    
-    # Split data
-    split_index = int(len(data_df) * 0.5)
-    train_df = data_df.iloc[:split_index].copy()
-    test_df = data_df.iloc[split_index:].copy()
+    # Define all data paths
+    data_paths = [
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-1000PEPEUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-1000PEPEUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ADAUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ADAUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-DOGEUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-DOGEUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ETHUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ETHUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-5m-20240929-to-20241128.csv",
+    ]
 
-    # Run backtest with initial parameters
-    
-    print("Running initial backtest...")
-    results = run_backtest(data_df, verbose=True)
-    print(results)
+    # Store results for all datasets
+    all_results = []
 
-    # Optimize strategy
-    print("\nOptimizing strategy parameters...")
-    best_params, _ = optimize_strategy(train_df)
-    
-    print("\nBest parameters found:")
-    for param, value in best_params.items():
-        print(f"{param}: {value}")
+    # Test each dataset
+    for data_path in data_paths:
+        try:
+            # Extract symbol and timeframe from path
+            filename = data_path.split('\\')[-1]
+            symbol = filename.split('-')[1]
+            timeframe = filename.split('-')[2]
+            
+            print(f"\nTesting {symbol} {timeframe}...")
+            
+            # Load and process data
+            data_df = pd.read_csv(data_path)
+            data_df["datetime"] = pd.to_datetime(data_df["datetime"])
+            
+            # Run backtest
+            results = run_backtest(data_df, verbose=False)
+            
+            # Add symbol and timeframe to results
+            results['symbol'] = symbol
+            results['timeframe'] = timeframe
+            
+            all_results.append(results)
+            
+        except Exception as e:
+            print(f"Error processing {data_path}: {str(e)}")
+            continue
 
-    # Test optimized strategy
-    print("\nTesting optimized strategy...")
-    results_optimized = run_backtest(test_df, plot=False, verbose=True, **best_params) 
+    # Sort results by win rate and get top 3
+    sorted_results = sorted(all_results, key=lambda x: x['Win Rate [%]'], reverse=True)[:3]
+
+    # Print top 3 results
+    print("\n=== Top 3 Results by Win Rate ===")
+    for i, result in enumerate(sorted_results, 1):
+        print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
+        print(f"Win Rate: {result['Win Rate [%]']:.2f}%")
+        print(f"Final equity: {result['Equity Final [$]']}")
+        print(f"Total Trades: {result['# Trades']}")
+        print(f"Total Return: {result['Return [%]']:.2f}%")
+        print(f"Final Equity: {result['Equity Final [$]']}")
+        print(f"Sharpe Ratio: {result['Sharpe Ratio']:.2f}")
+        print(f"Max Drawdown: {result['Max. Drawdown [%]']:.2f}%")
+        print(f"Profit Factor: {result['Profit Factor']:.2f}") 

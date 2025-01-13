@@ -10,500 +10,451 @@ from datetime import datetime
 from deap import base, creator, tools, algorithms
 import random
 import multiprocessing
+import backtrader as bt
+import math
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-class MaCrossoverStrategy(Strategy):
-    '''
-    Optimialization results:
-    Best parameters found:
-    fast_ma_period = 5
-    slow_ma_period = 15
-    rsi_period = 13
-    atr_period = 15
-    vol_ma_period = 22
-    cci_period = 11
-    atr_multiplier = 2.0
-    min_atr_threshold = 40
-    profit_target = 0.0002
-    max_spread = 9
-    risk_per_trade = 0.02
-    rsi_oversold = 20
-    rsi_overbought = 77
-    max_trade_duration = 9
-    '''
-
-    # Define parameters that can be optimized
-    fast_ma_period = 5      # Fast EMA period
-    slow_ma_period = 20     # Slow EMA period
-    rsi_period = 14        # RSI period
-    atr_period = 14        # ATR period
-    vol_ma_period = 20     # Volume MA period
-    cci_period = 14        # CCI period
-    profit_target = 0.02   # 2% profit target
-    atr_multiplier = 1.5   # Multiplier for ATR-based stop loss
-    min_atr_threshold = 50.0  # Minimum ATR value to trade (in price points)
-    max_spread = 10.0       # Maximum allowed spread in points
-    risk_per_trade = 0.01 # 1% of equity per trade
+class MaCrossoverStrategy(bt.Strategy):
+    """Moving Average Crossover Strategy with additional indicators"""
     
-    # Indicator thresholds
-    rsi_oversold = 30
-    rsi_overbought = 70
-    rsi_middle = 50
-    cci_high = 100
-    cci_low = -100
-    
-    # Add new parameters
-    max_trade_duration = 5  # Maximum trade duration in minutes
-    
-    def init(self):
-        # Calculate EMAs using mid price for signals
-        self.fast_ma = self.I(talib.EMA, self.data.mid_price, timeperiod=self.fast_ma_period)
-        self.slow_ma = self.I(talib.EMA, self.data.mid_price, timeperiod=self.slow_ma_period)
+    params = (
+        # MA parameters
+        ('fast_ma_period', 5),
+        ('slow_ma_period', 15),
         
-        # Calculate RSI
-        self.rsi = self.I(talib.RSI, self.data.mid_price, timeperiod=self.rsi_period)
+        # Risk management
+        ('sl_pct', 0.01),  # 1% stop loss
+        ('tp_pct', 0.01),  # 1% take profit
+        ('min_size', 1.0),
         
-        # Calculate ATR
-        self.atr = self.I(talib.ATR, self.data.High, self.data.Low, self.data.Close, 
-                         timeperiod=self.atr_period)
+        # Additional indicators
+        ('rsi_period', 14),
+        ('rsi_oversold', 30),
+        ('rsi_overbought', 70),
+        ('rsi_middle', 50),
         
-        # Calculate Volume MA
-        self.volume_ma = self.I(talib.SMA, self.data.Volume, timeperiod=self.vol_ma_period)
+        # CCI parameters
+        ('cci_period', 14),
+        ('cci_high', 100),
+        ('cci_low', -100),
         
-        # Add CCI indicator
-        self.cci = self.I(talib.CCI, self.data.High, self.data.Low, self.data.Close,
-                         timeperiod=self.cci_period)
+        # ATR parameters
+        ('atr_period', 14),
+        ('min_atr_threshold', 50.0),
         
-        # Additional indicators for analysis
-        self.spread = self.data.spread
-        self.volatility = self.data.volatility
-
-        # Initialize variables to store SL and TP levels
-        self.sl = None
-        self.tp = None
+        # Volume parameters
+        ('vol_ma_period', 20),
         
-        # Add trade time tracking
-        self.entry_time = None
-
-    def should_exit_trade(self):
-        """Check if we should exit the current trade based on our exit criteria"""
-        if not self.position or not self.entry_time:
-            return False
-        
-        current_time = self.data.index[-1]
-        trade_duration = (current_time - self.entry_time).total_seconds() / 60
-        
-        # 1. Time-based exit
-        if trade_duration >= self.max_trade_duration:
-            return True
-        
-        # 2. Signal reversal exit
-        ma_signal_reversed = (self.position.is_long and crossover(self.slow_ma, self.fast_ma)) or \
-                             (self.position.is_short and crossover(self.fast_ma, self.slow_ma))
-        
-        rsi_rising = self.rsi[-1] > self.rsi[-2]
-        rsi_falling = self.rsi[-1] < self.rsi[-2]
-        
-        rsi_signal_reversed = (self.position.is_long and rsi_falling) or \
-                              (self.position.is_short and rsi_rising)
-        
-        cci_bull = self.cci[-1] > self.cci_high
-        cci_bear = self.cci[-1] < self.cci_low
-        
-        cci_signal_reversed = (self.position.is_long and cci_bear) or \
-                              (self.position.is_short and cci_bull)
-        
-        
-        if ma_signal_reversed and rsi_signal_reversed and cci_signal_reversed:
-            return True
-        
-        # 3. Profit target check (using actual trade P&L)
-        # if self.position.pl_pct >= self.profit_target:
-        #     return True
-        
-        return False
-
-    def next(self):
-        # First, check if we should exit existing position
-        if np.isnan([self.fast_ma[-1], self.slow_ma[-1], self.rsi[-1], self.cci[-1]]).any():
-            return
-        
-        if self.position:
-            # Check for exit conditions
-            if self.should_exit_trade():
-                self.position.close()
-                self.entry_time = None
-                self.sl = None
-                self.tp = None
-                return
-            
-            # If in position, check for SL/TP
-            current_high = self.data.High[-1]
-            current_low = self.data.Low[-1]
-            
-            if self.position.is_long:
-                if (self.tp is not None and current_high >= self.tp) or \
-                   (self.sl is not None and current_low <= self.sl):
-                    self.position.close()
-                    self.entry_time = None
-                    self.sl = None
-                    self.tp = None
-            elif self.position.is_short:
-                if (self.tp is not None and current_low <= self.tp) or \
-                   (self.sl is not None and current_high >= self.sl):
-                    self.position.close()
-                    self.entry_time = None
-                    self.sl = None
-                    self.tp = None
-            return  # Exit after handling SL/TP
-        
-        # Skip if spread is too wide or ATR is too low
-        if (self.spread[-1] > self.max_spread or 
-            self.atr[-1] < self.min_atr_threshold):
-            return
-        
-        # Skip if volume is below its MA
-        if self.data.Volume[-1] <= self.volume_ma[-1]:
-            return
-        
-        # Calculate position size based on risk
-        risk_amount = self.equity * self.risk_per_trade
-
-        crossed_above = crossover(self.fast_ma, self.slow_ma)
-        crossed_below = crossover(self.slow_ma, self.fast_ma)
-        rsi_rising = self.rsi[-1] > self.rsi[-2]
-        rsi_falling = self.rsi[-1] < self.rsi[-2]
-        cci_bull = self.cci[-1] > self.cci_high
-        cci_bear = self.cci[-1] < self.cci_low
-        
-        # Long position setup
-        if (crossed_above and rsi_rising and cci_bull and not self.position and
-            self.rsi_middle < self.rsi[-1] < self.rsi_overbought):
-            
-            # Calculate long position parameters
-            entry_price = self.data.ask[-1]  # Use Close price for entry
-            
-            # Calculate ATR-based stop loss
-            atr_stop = self.atr[-1] * self.atr_multiplier
-            stop_loss_price = entry_price - atr_stop
-            take_profit_price = entry_price + (atr_stop * self.profit_target)  # 2:1 reward-to-risk ratio
-            
-            # Ensure SL and TP are logical
-            if stop_loss_price >= entry_price:
-                return  # Invalid SL
-            
-            # Calculate position size based on ATR stop loss
-            risk_per_coin = entry_price - stop_loss_price
-            btc_position = risk_amount / risk_per_coin
-            
-            # Round to nearest whole number and ensure minimum of 1 BTC
-            size = 1 # max(1, int(btc_position))
-            
-            # Place buy order
-            self.buy(size=size)
-            
-            # Set entry time
-            self.entry_time = self.data.index[-1]
-            
-            # Set SL and TP
-            self.sl = stop_loss_price
-            self.tp = take_profit_price
-        
-        # Short position setup
-        elif (crossed_below and rsi_falling and cci_bear and not self.position and
-            self.rsi_oversold < self.rsi[-1] < self.rsi_middle):
-            
-            # Calculate short position parameters
-            entry_price = self.data.bid[-1]  # Use Close price for entry
-            
-            # Calculate ATR-based stop loss
-            atr_stop = self.atr[-1] * self.atr_multiplier
-            stop_loss_price = entry_price + atr_stop
-            take_profit_price = entry_price - (atr_stop * self.profit_target)  # 2:1 reward-to-risk ratio
-            
-            # Ensure SL and TP are logical
-            if stop_loss_price <= entry_price:
-                return  # Invalid SL
-            
-            # Calculate position size based on ATR stop loss
-            risk_per_coin = stop_loss_price - entry_price
-            btc_position = risk_amount / risk_per_coin
-            
-            # Round to nearest whole number and ensure minimum of 1 BTC
-            size = 1 # max(1, int(btc_position))
-            
-            # Place sell order
-            self.sell(size=size)
-            
-            # Set entry time
-            self.entry_time = self.data.index[-1]
-            
-            # Set SL and TP
-            self.sl = stop_loss_price
-            self.tp = take_profit_price
-
-def run_backtest(data, **kwargs):
-    """
-    Run the backtest with the given data and parameters.
-    """
-    # Initialize Backtest
-    bt = Backtest(
-        data,
-        MaCrossoverStrategy,
-        cash=1000000.0,
-        commission=0.0002,
-        exclusive_orders=False,
-        trade_on_close=False,
-        margin=1.0 / 50
+        # Feature flags
+        ('use_rsi', True),
+        ('use_cci', True),
+        ('use_volume', True),
     )
 
-    # Set default parameters if not provided
-    if not kwargs:
-        kwargs = {
-            'fast_ma_period': 5,
-            'slow_ma_period': 20,
-            'rsi_period': 14,
-            'atr_period': 14,
-            'vol_ma_period': 20,
-            'cci_period': 14,
-            'atr_multiplier': 1.5,
-            'min_atr_threshold': 50.0,
-            'profit_target': 0.02,
-            'max_spread': 10.0,
-            'risk_per_trade': 0.01,
-            'rsi_oversold': 30,
-            'rsi_overbought': 70,
-            'max_trade_duration': 5,  # 5 minutes maximum trade duration
-        }
-    
-    # Run Backtest with provided parameters
-    results = bt.run(**kwargs)
-
-    # Create a simpler filename for the plot
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    plot_filename = f"MA_Crossover_Backtest_{timestamp}.html"
-    
-    # Plot the results with the simplified filename
-    bt.plot(filename=plot_filename, resample=False)
-
-    return results
-
-def evaluate_strategy(individual, data):
-    """
-    Evaluate the strategy with given parameters.
-    Returns a composite fitness score based on multiple metrics.
-    """
-    # Suppress RuntimeWarnings during backtest evaluation
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
+    def __init__(self):
+        """Initialize strategy components"""
+        # Initialize trade tracking
+        self.trades_list = []
+        self.long_signals = 0
+        self.short_signals = 0
         
-        params = {
-            'fast_ma_period': individual[0],
-            'slow_ma_period': individual[1],
-            'rsi_period': individual[2],
-            'atr_period': individual[3],
-            'vol_ma_period': individual[4],
-            'cci_period': individual[5],
-            'atr_multiplier': individual[6],
-            'min_atr_threshold': individual[7],
-            'profit_target': individual[8],
-            'max_spread': individual[9],
-            'risk_per_trade': individual[10],
-            'rsi_oversold': individual[11],
-            'rsi_overbought': individual[12],
-            'max_trade_duration': individual[13]
-        }
-        
-        # Run backtest with these parameters
-        try:
-            bt = Backtest(
-                data,
-                MaCrossoverStrategy,
-                cash=1000000.0,
-                commission=0.0002,
-                exclusive_orders=False,
-                trade_on_close=False,
-                margin=1.0 / 50
-            )   
-            stats = bt.run(**params)
-        except Exception as e:
-            # Penalize invalid parameter combinations
-            return (-np.inf,)
-        
-        # Extract relevant metrics
-        total_trades = stats['# Trades']
-        win_rate = stats['Win Rate [%]'] / 100
-        profit_factor = stats['Profit Factor']
-        return_pct = stats['Return [%]'] / 100
-        max_drawdown = stats['Max. Drawdown [%]'] / 100
-        
-        # Handle edge cases
-        if total_trades < 10:  # Require minimum number of trades
-            return (-np.inf,)
-        
-        if max_drawdown == 0:  # Avoid division by zero
-            max_drawdown = 0.0001
-        
-        if profit_factor == 0:  # Avoid division by zero
-            profit_factor = 0.0001
-        
-        # Calculate composite score
-        # Weighted combination of different metrics
-        score = (
-            win_rate * 0.3 +                    # 30% weight on win rate
-            (return_pct / max_drawdown) * 0.4 + # 40% weight on return/drawdown ratio
-            (profit_factor / 10) * 0.3         # 30% weight on profit factor (scaled)
+        # Calculate EMAs
+        self.fast_ma = bt.indicators.EMA(
+            self.data.close, 
+            period=self.p.fast_ma_period
+        )
+        self.slow_ma = bt.indicators.EMA(
+            self.data.close, 
+            period=self.p.slow_ma_period
         )
         
-        # Penalize extreme parameter combinations
-        if individual[0] >= individual[1]:  # fast MA period >= slow MA period
-            score *= 0.1
+        # Initialize RSI if used
+        if self.p.use_rsi:
+            self.rsi = bt.indicators.RSI(
+                self.data.close,
+                period=self.p.rsi_period
+            )
         
-        if individual[11] >= individual[12]:  # RSI oversold >= overbought
-            score *= 0.1
+        # Initialize CCI if used
+        if self.p.use_cci:
+            self.cci = bt.indicators.CCI(
+                self.data,
+                period=self.p.cci_period
+            )
         
-        return (max(score, 0.0001),)  # Ensure non-negative score
+        # Initialize ATR
+        self.atr = bt.indicators.ATR(
+            self.data,
+            period=self.p.atr_period
+        )
+        
+        # Initialize Volume MA if used
+        if self.p.use_volume:
+            self.volume_ma = bt.indicators.SMA(
+                self.data.volume,
+                period=self.p.vol_ma_period
+            )
 
-def optimize_strategy(data, population_size=100, generations=30):
-    """
-    Optimize strategy parameters using genetic algorithm.
-    """
-    # Clear any existing DEAP types
-    if hasattr(creator, 'FitnessMax'):
-        del creator.FitnessMax
-    if hasattr(creator, 'Individual'):
-        del creator.Individual
+    def calculate_position_size(self, current_price):
+        try:
+            current_equity = self.broker.getvalue()
+
+            if current_equity < 100:
+                position_value = current_equity
+            else:
+                position_value = 100.0
+
+            leverage = 10
+
+            # Adjust position size according to leverage
+            position_size = (position_value * leverage) / current_price
+
+            return position_size
+        except Exception as e:
+            print(f"Error in calculate_position_size: {str(e)}")
+            return 0
+
+    def next(self):
+        """Define trading logic"""
+        if self.position:
+            return
+        
+        # Skip if ATR is too low
+        if self.atr[0] < self.p.min_atr_threshold:
+            return
+        
+        # Skip if volume is below MA (if using volume)
+        if self.p.use_volume and self.data.volume[0] <= self.volume_ma[0]:
+            return
+        
+        current_close = self.data.close[0]
+        
+        # Check for crossovers
+        crossed_above = self.fast_ma[-1] < self.slow_ma[-1] and self.fast_ma[0] > self.slow_ma[0]
+        crossed_below = self.fast_ma[-1] > self.slow_ma[-1] and self.fast_ma[0] < self.slow_ma[0]
+        
+        # Long entry conditions
+        if crossed_above:
+            long_condition = True
+            
+            if self.p.use_rsi:
+                long_condition = long_condition and self.rsi[0] > self.p.rsi_middle
+            
+            if self.p.use_cci:
+                long_condition = long_condition and self.cci[0] > self.p.cci_low
+            
+            if long_condition:
+                self._execute_long_trade(current_close)
+        
+        # Short entry conditions
+        elif crossed_below:
+            short_condition = True
+            
+            if self.p.use_rsi:
+                short_condition = short_condition and self.rsi[0] < self.p.rsi_middle
+            
+            if self.p.use_cci:
+                short_condition = short_condition and self.cci[0] < self.p.cci_high
+            
+            if short_condition:
+                self._execute_short_trade(current_close)
+
+    def _execute_long_trade(self, current_close):
+        """Execute long trade with bracket orders"""
+        stop_loss = current_close * (1 - self.p.sl_pct)
+        take_profit = current_close * (1 + self.p.tp_pct)
+        
+        size = self.calculate_position_size(current_close)
+        
+        self.buy_bracket(
+            size=size,
+            exectype=bt.Order.Market,
+            stopprice=stop_loss,
+            limitprice=take_profit,
+        )
+        
+        self.long_signals += 1
+
+    def _execute_short_trade(self, current_close):
+        """Execute short trade with bracket orders"""
+        stop_loss = current_close * (1 + self.p.sl_pct)
+        take_profit = current_close * (1 - self.p.tp_pct)
+        
+        size = self.calculate_position_size(current_close)
+        
+        self.sell_bracket(
+            size=size,
+            exectype=bt.Order.Market,
+            stopprice=stop_loss,
+            limitprice=take_profit,
+        )
+        
+        self.short_signals += 1
+
+    def notify_trade(self, trade):
+        if trade.isclosed:
+            self.trades_list.append({
+                'pnl': trade.pnlcomm,
+                'size': trade.size,
+                'price': trade.price,
+                'value': trade.value,
+                'commission': trade.commission,
+                'datetime': trade.data.datetime.datetime(0)
+            })
+
+class TradeRecorder(bt.Analyzer):
+    """Custom analyzer to record individual trade results for SQN calculation"""
     
-    # Create fitness and individual classes
-    creator.create("FitnessMax", base.Fitness, weights=(1.0,))
-    creator.create("Individual", list, fitness=creator.FitnessMax)
-    
-    # Initialize toolbox
-    toolbox = base.Toolbox()
-    
-    # Define parameter ranges (min, max) to avoid overfitting
-    param_ranges = [
-        (3, 10),       # fast_ma_period (integer)
-        (15, 30),      # slow_ma_period (integer)
-        (10, 20),      # rsi_period (integer)
-        (10, 20),      # atr_period (integer)
-        (15, 30),      # vol_ma_period (integer)
-        (10, 20),      # cci_period (integer)
-        (1.0, 2.0),    # atr_multiplier (float)
-        (30, 70),      # min_atr_threshold (integer)
-        (0.0002, 0.003),  # profit_target (float)
-        (5, 15),       # max_spread (integer)
-        (0.005, 0.02), # risk_per_trade (float)
-        (20, 40),      # rsi_oversold (integer)
-        (60, 80),      # rsi_overbought (integer)
-        (3, 10)        # max_trade_duration (integer)
-    ]
-    
-    # Register parameter generators with proper types
-    for i, (min_val, max_val) in enumerate(param_ranges):
-        if i in [0, 1, 2, 3, 4, 5, 7, 9, 11, 12, 13]:  # Integer parameters
-            toolbox.register(f"attr_{i}", random.randint, min_val, max_val)
-        else:  # Float parameters
-            toolbox.register(f"attr_{i}", random.uniform, min_val, max_val)
-    
-    # Mutation function for mixed types
-    def mixed_type_mutation(individual, mu, sigma, indpb):
-        for i, val in enumerate(individual):
-            if random.random() < indpb:
-                if i in [0, 1, 2, 3, 4, 5, 7, 9, 11, 12, 13]:  # Integer parameters
-                    individual[i] = int(random.gauss(val, sigma))
-                    # Ensure values stay within bounds
-                    individual[i] = max(param_ranges[i][0], min(param_ranges[i][1], individual[i]))
-                else:  # Float parameters
-                    individual[i] = random.gauss(val, sigma)
-                    individual[i] = max(param_ranges[i][0], min(param_ranges[i][1], individual[i]))
-        return individual,
-    
-    # Create individual and population
-    toolbox.register("individual", tools.initCycle, creator.Individual,
-                     [getattr(toolbox, f"attr_{i}") for i in range(len(param_ranges))], n=1)
-    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
-    
-    # Register genetic operators
-    toolbox.register("evaluate", evaluate_strategy, data=data)
-    toolbox.register("mate", tools.cxTwoPoint)
-    toolbox.register("mutate", mixed_type_mutation, mu=0, sigma=1, indpb=0.2)
-    toolbox.register("select", tools.selTournament, tournsize=3)
-    
-    # Set up parallel processing
-    pool = multiprocessing.Pool()
-    toolbox.register("map", pool.map)
-    
-    # Create initial population
-    pop = toolbox.population(n=population_size)
-    hof = tools.HallOfFame(1)
-    stats = tools.Statistics(lambda ind: ind.fitness.values)
-    stats.register("avg", np.mean)
-    stats.register("min", np.min)
-    stats.register("max", np.max)
-    
-    # Run optimization
+    def __init__(self):
+        super(TradeRecorder, self).__init__()
+        self.trades = []
+
+    def get_analysis(self):
+        return self
+
+    def notify_trade(self, trade):
+        if trade.status == trade.Closed:
+            self.trades.append({
+                'pnl': trade.pnlcomm,
+                'size': trade.size,
+                'price': trade.price,
+                'value': trade.value,
+                'commission': trade.commission,
+                'datetime': trade.data.datetime.datetime(0)
+            })
+
+def calculate_sqn(trades):
+    """Calculate System Quality Number using individual trade data"""
     try:
-        pop, logbook = algorithms.eaSimple(pop, toolbox, cxpb=0.7, mutpb=0.3,
-                                         ngen=generations, stats=stats, halloffame=hof,
-                                         verbose=True)
-    finally:
-        pool.close()
+        if not trades or len(trades) < 2:
+            return 0.0
+            
+        pnl_list = [trade['pnl'] for trade in trades]
+        avg_pnl = np.mean(pnl_list)
+        std_pnl = np.std(pnl_list)
+        
+        if std_pnl == 0:
+            return 0.0
+            
+        sqn = (avg_pnl / std_pnl) * math.sqrt(len(pnl_list))
+        return max(min(sqn, 100), -100)  # Limit SQN to reasonable range
+        
+    except Exception as e:
+        print(f"Error calculating SQN: {str(e)}")
+        return 0.0
+
+def run_backtest(data, plot=False, verbose=True, **kwargs):
+    """Run backtest with the given data and parameters"""
+    cerebro = bt.Cerebro()
+
+    # Add data feed
+    feed = bt.feeds.PandasData(
+        dataname=data,
+        timeframe=bt.TimeFrame.Minutes,
+        compression=1,
+        datetime="datetime",
+        open="Open",
+        high="High",
+        low="Low",
+        close="Close",
+        volume="Volume",
+        openinterest=None,
+    )
+    cerebro.adddata(feed)
+
+    # Add strategy
+    cerebro.addstrategy(MaCrossoverStrategy, **kwargs)
     
-    # Get best parameters
-    best_params = {
-        'fast_ma_period': int(hof[0][0]),
-        'slow_ma_period': int(hof[0][1]),
-        'rsi_period': int(hof[0][2]),
-        'atr_period': int(hof[0][3]),
-        'vol_ma_period': int(hof[0][4]),
-        'cci_period': int(hof[0][5]),
-        'atr_multiplier': float(hof[0][6]),
-        'min_atr_threshold': int(hof[0][7]),
-        'profit_target': float(hof[0][8]),
-        'max_spread': int(hof[0][9]),
-        'risk_per_trade': float(hof[0][10]),
-        'rsi_oversold': int(hof[0][11]),
-        'rsi_overbought': int(hof[0][12]),
-        'max_trade_duration': int(hof[0][13])
+    # Set broker parameters
+    initial_cash = 100.0
+    cerebro.broker.setcash(initial_cash)
+    cerebro.broker.setcommission(
+        commission=0.0002,
+        commtype=bt.CommInfoBase.COMM_PERC,
+        margin=1.0/10
+    )
+    cerebro.broker.set_slippage_perc(0.0001)
+
+    # Add analyzers
+    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", riskfreerate=0.0)
+    cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
+    cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
+    cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
+    cerebro.addanalyzer(bt.analyzers.TimeReturn, _name="time_return")
+    cerebro.addanalyzer(TradeRecorder, _name='trade_recorder')
+
+    if plot:
+        cerebro.addobserver(bt.observers.BuySell)
+        cerebro.addobserver(bt.observers.Value)
+        cerebro.addobserver(bt.observers.DrawDown)
+
+    # Run backtest and get results
+    results = cerebro.run()
+    strat = results[0]
+
+    # Calculate metrics
+    try:
+        trade_recorder = strat.analyzers.trade_recorder.get_analysis()
+        sqn = calculate_sqn(trade_recorder.trades if hasattr(trade_recorder, 'trades') else [])
+    except Exception as e:
+        print(f"Error accessing trade recorder: {e}")
+        sqn = 0.0
+    
+    try:
+        trades_analysis = strat.analyzers.trades.get_analysis()
+    except Exception as e:
+        print(f"Error accessing trades analysis: {e}")
+        trades_analysis = {}
+
+    try:
+        drawdown_analysis = strat.analyzers.drawdown.get_analysis()
+    except Exception as e:
+        print(f"Error accessing drawdown analysis: {e}")
+        drawdown_analysis = {}
+
+    # Calculate metrics with safe getters
+    final_value = cerebro.broker.getvalue()
+    total_return = (final_value - initial_cash) / initial_cash * 100
+
+    # Safe getter function
+    def safe_get(d, *keys, default=0):
+        try:
+            for key in keys:
+                if d is None:
+                    return default
+                d = d[key]
+            return d if d is not None else default
+        except (KeyError, AttributeError, TypeError):
+            return default
+
+    # Get Sharpe Ratio
+    try:
+        sharpe_ratio = strat.analyzers.sharpe.get_analysis()["sharperatio"]
+        if sharpe_ratio is None:
+            sharpe_ratio = 0.0
+    except:
+        sharpe_ratio = 0.0
+
+    # Format results
+    formatted_results = {
+        "Start": data.datetime.iloc[0].strftime("%Y-%m-%d"),
+        "End": data.datetime.iloc[-1].strftime("%Y-%m-%d"),
+        "Duration": f"{(data.datetime.iloc[-1] - data.datetime.iloc[0]).days} days",
+        "Exposure Time [%]": (safe_get(trades_analysis, "total", "total", default=0) / len(data)) * 100,
+        "Equity Final [$]": final_value,
+        "Equity Peak [$]": final_value + (safe_get(drawdown_analysis, "max", "drawdown", default=0) * final_value / 100),
+        "Return [%]": total_return,
+        "Buy & Hold Return [%]": ((data["Close"].iloc[-1] / data["Close"].iloc[0] - 1) * 100),
+        "Max. Drawdown [%]": safe_get(drawdown_analysis, "max", "drawdown", default=0),
+        "Avg. Drawdown [%]": safe_get(drawdown_analysis, "average", "drawdown", default=0),
+        "Max. Drawdown Duration": safe_get(drawdown_analysis, "max", "len", default=0),
+        "Avg. Drawdown Duration": safe_get(drawdown_analysis, "average", "len", default=0),
+        "# Trades": safe_get(trades_analysis, "total", "total", default=0),
+        "Win Rate [%]": (safe_get(trades_analysis, "won", "total", default=0) / 
+                        max(safe_get(trades_analysis, "total", "total", default=1), 1) * 100),
+        "Best Trade [%]": safe_get(trades_analysis, "won", "pnl", "max", default=0),
+        "Worst Trade [%]": safe_get(trades_analysis, "lost", "pnl", "min", default=0),
+        "Avg. Trade [%]": safe_get(trades_analysis, "pnl", "net", "average", default=0),
+        "Max. Trade Duration": safe_get(trades_analysis, "len", "max", default=0),
+        "Avg. Trade Duration": safe_get(trades_analysis, "len", "average", default=0),
+        "Profit Factor": (safe_get(trades_analysis, "won", "pnl", "total", default=0) / 
+                         max(abs(safe_get(trades_analysis, "lost", "pnl", "total", default=1)), 1)),
+        "Sharpe Ratio": float(sharpe_ratio),
+        "SQN": sqn
     }
+
+    # Add expectancy calculation
+    win_rate = formatted_results['Win Rate [%]'] / 100
+    loss_rate = 1 - win_rate
+    avg_win = safe_get(trades_analysis, 'won', 'pnl', 'average', default=0)
+    avg_loss = abs(safe_get(trades_analysis, 'lost', 'pnl', 'average', default=0))
     
-    return best_params, logbook
+    expectancy = (win_rate * avg_win) - (loss_rate * avg_loss)
+    formatted_results['Expectancy'] = expectancy
+
+    if verbose:
+        print("\n=== Strategy Performance Report ===")
+        print(f"\nPeriod: {formatted_results['Start']} - {formatted_results['End']} ({formatted_results['Duration']})")
+        print(f"Initial Capital: ${initial_cash:,.2f}")
+        print(f"Final Capital: ${float(formatted_results['Equity Final [$]']):,.2f}")
+        print(f"Total Return: {float(formatted_results['Return [%]']):,.2f}%")
+        print(f"Buy & Hold Return: {float(formatted_results['Buy & Hold Return [%]']):,.2f}%")
+        print(f"\nTotal Trades: {int(formatted_results['# Trades'])}")
+        print(f"Expectancy: {float(formatted_results['Expectancy']):,.2f}")
+        print(f"Win Rate: {float(formatted_results['Win Rate [%]']):,.2f}%")
+        print(f"Best Trade: {float(formatted_results['Best Trade [%]']):,.2f}%")
+        print(f"Worst Trade: {float(formatted_results['Worst Trade [%]']):,.2f}%")
+        print(f"Avg. Trade: {float(formatted_results['Avg. Trade [%]']):,.2f}%")
+        print(f"\nMax Drawdown: {float(formatted_results['Max. Drawdown [%]']):,.2f}%")
+        print(f"Sharpe Ratio: {float(formatted_results['Sharpe Ratio']):,.2f}")
+        print(f"Profit Factor: {float(formatted_results['Profit Factor']):,.2f}")
+        print(f"SQN: {float(formatted_results['SQN']):,.2f}")
+
+    return formatted_results
 
 if __name__ == "__main__":
+    # Define all data paths
+    data_paths = [
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-1000PEPEUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-1000PEPEUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ADAUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ADAUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-DOGEUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-DOGEUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ETHUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ETHUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-5m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-1m-20240929-to-20241128.csv",
+        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-5m-20240929-to-20241128.csv",
+    ]
 
-    data = pd.read_csv(
-        r'F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-1m-20241007-to-20241106.csv'
-    )
+    # Store results for all datasets
+    all_results = []
 
-        
-    # Data preprocessing as before
-    required_columns = ['datetime', 'Open', 'High', 'Low', 'Close', 'Volume', 
-                       'bid', 'ask', 'mid_price', 'spread', 'volatility']
-    
-    assert all(col in data.columns for col in required_columns), \
-        f"Missing required columns. Required: {required_columns}"
+    # Test each dataset
+    for data_path in data_paths:
+        try:
+            # Extract symbol and timeframe from path
+            filename = data_path.split('\\')[-1]
+            symbol = filename.split('-')[1]
+            timeframe = filename.split('-')[2]
+            
+            print(f"\nTesting {symbol} {timeframe}...")
+            
+            # Load and process data
+            data_df = pd.read_csv(data_path)
+            data_df["datetime"] = pd.to_datetime(data_df["datetime"])
+            
+            # Run backtest
+            results = run_backtest(data_df, verbose=False)
+            
+            # Add symbol and timeframe to results
+            results['symbol'] = symbol
+            results['timeframe'] = timeframe
+            
+            all_results.append(results)
+            
+        except Exception as e:
+            print(f"Error processing {data_path}: {str(e)}")
+            continue
 
-    data['datetime'] = pd.to_datetime(data['datetime'])
-    data.set_index('datetime', inplace=True)
-    if not data.index.is_monotonic_increasing:
-        data.sort_index(inplace=True)
-    data['mid_price'] = (data['bid'] + data['ask']) / 2
-    data.dropna(subset=['bid', 'ask', 'Open', 'High', 'Low', 'Close', 'Volume'], inplace=True)
-    data.fillna(method='ffill', inplace=True)
+    # Sort results by win rate and get top 3
+    sorted_results = sorted(all_results, key=lambda x: x['Win Rate [%]'], reverse=True)[:3]
 
-
-
-    # Run optimization
-    # print("Starting parameter optimization...")
-    # best_params, logbook = optimize_strategy(data)
-    # print("\nBest parameters found:")
-    # for param, value in best_params.items():
-    #     print(f"{param}: {value}")
-    
-    # Run backtest with optimized parameters
-    print("\nRunning backtest with optimized parameters...")
-    results = run_backtest(data) #, **best_params)
-    print("\nBacktest results:")
-    print(results)
+    # Print top 3 results
+    print("\n=== Top 3 Results by Win Rate ===")
+    for i, result in enumerate(sorted_results, 1):
+        print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
+        print(f"Win Rate: {result['Win Rate [%]']:.2f}%")
+        print(f"Total Trades: {result['# Trades']}")
+        print(f"Total Return: {result['Return [%]']:.2f}%")
+        print(f"Final Equity: {result['Equity Final [$]']}")
+        print(f"Sharpe Ratio: {result['Sharpe Ratio']:.2f}")
+        print(f"Max Drawdown: {result['Max. Drawdown [%]']:.2f}%")
+        print(f"Profit Factor: {result['Profit Factor']:.2f}") 

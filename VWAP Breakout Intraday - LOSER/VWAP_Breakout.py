@@ -35,8 +35,8 @@ class VWAP_BreakoutStrategy(bt.Strategy):
     params = (
         ("vwap_period", 20),
         ("sma_period", 20),
-        ("stop_loss_pct", 0.005),
-        ("take_profit_ratio", 2.0),
+        ("stop_loss_pct", 0.01),
+        ("take_profit_pct", 0.01),
         ("relative_volume_multiplier", 1.5),
         ("position_value_max", 100.0),
         ("risk_percentage", 0.01),
@@ -142,7 +142,6 @@ class VWAP_BreakoutStrategy(bt.Strategy):
                 # Get highest high and lowest low of the last two buy signal candles
                 last_two = self.buy_signal_candles[-2:]
                 highest_high = max(candle['high'] for candle in last_two)
-                lowest_low = min(candle['low'] for candle in last_two)
                 
                 # Breakout condition
                 if current_high > highest_high:
@@ -150,10 +149,9 @@ class VWAP_BreakoutStrategy(bt.Strategy):
                     if position_size <= 0:
                         return
                         
-                    # Calculate stop loss (lower of VWAP or lowest low)
-                    stop_price = min(self.vwap[0], lowest_low)
-                    risk = current_close - stop_price
-                    take_profit = current_close + (risk * self.p.take_profit_ratio)
+                    # Calculate static stop loss and take profit levels
+                    stop_price = current_close * (1 - self.p.stop_loss_pct)
+                    take_profit = current_close * (1 + self.p.take_profit_pct)
                     
                     self.buy_bracket(
                         size=position_size,
@@ -167,7 +165,6 @@ class VWAP_BreakoutStrategy(bt.Strategy):
                 # Get lowest low and highest high of the last two sell signal candles
                 last_two = self.sell_signal_candles[-2:]
                 lowest_low = min(candle['low'] for candle in last_two)
-                highest_high = max(candle['high'] for candle in last_two)
                 
                 # Breakdown condition
                 if current_low < lowest_low:
@@ -175,11 +172,9 @@ class VWAP_BreakoutStrategy(bt.Strategy):
                     if position_size <= 0:
                         return
                         
-                    # Calculate stop loss (higher of VWAP or highest high)
-                    stop_price = max(self.vwap[0], highest_high)
-                    risk = stop_price - current_close
-                    take_profit = current_close - (risk * self.p.take_profit_ratio)
-                    
+                    # Calculate static stop loss and take profit levels
+                    stop_price = current_close * (1 + self.p.stop_loss_pct)
+                    take_profit = current_close * (1 - self.p.take_profit_pct)
                     
                     self.sell_bracket(
                         size=position_size,
