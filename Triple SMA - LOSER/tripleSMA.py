@@ -8,6 +8,8 @@ import multiprocessing
 from functools import partial
 import math
 import traceback
+from pathlib import Path
+import json
 
 random.seed(42)
 
@@ -69,7 +71,7 @@ class TrippleSMA_Strategy(bt.Strategy):
             else:
                 position_value = 100.0
 
-            leverage = 10
+            leverage = 50
 
             # Adjust position size according to leverage
             position_size = (position_value * leverage) / current_price
@@ -131,29 +133,173 @@ def calculate_sqn(trades):
         return 0.0
 
 class TradeRecorder(bt.Analyzer):
-    """Custom analyzer to record individual trade results for SQN calculation"""
+    """Custom analyzer to record individual trade results"""
     
     def __init__(self):
         super(TradeRecorder, self).__init__()
-        self.trades = []
-        self.current_trade = None
-
-    def get_analysis(self):
-        """Required method for Backtrader analyzers"""
-        return self
-
+        self.trades = []  # Store trades as a list
+        
     def notify_trade(self, trade):
         if trade.status == trade.Closed:
             self.trades.append({
-                'pnl': trade.pnlcomm,  # PnL including commission
+                'datetime': trade.data.datetime.datetime(0),
+                'type': 'long' if trade.size > 0 else 'short',
                 'size': trade.size,
                 'price': trade.price,
-                'value': trade.value,
+                'value': abs(trade.price * trade.size),
+                'pnl': trade.pnl,
+                'pnlcomm': trade.pnlcomm,
                 'commission': trade.commission,
-                'datetime': trade.data.datetime.datetime(0)
+                'entry_price': trade.price,
+                'exit_price': trade.price,
+                'bars_held': len(self.strategy)  # Current bar count
             })
 
-def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
+    def get_analysis(self):
+        """Return the list of trades"""
+        return self.trades
+
+class DetailedDrawdownAnalyzer(bt.Analyzer):
+    """Analyzer providing detailed drawdown statistics"""
+    
+    def __init__(self):
+        super(DetailedDrawdownAnalyzer, self).__init__()
+        self.drawdowns = []
+        self.current_drawdown = None
+        self.peak = 0
+        self.equity_curve = []
+        
+    def next(self):
+        value = self.strategy.broker.getvalue()
+        self.equity_curve.append(value)
+        
+        if value > self.peak:
+            self.peak = value
+            if self.current_drawdown is not None:
+                self.drawdowns.append(self.current_drawdown)
+                self.current_drawdown = None
+        elif value < self.peak:
+            dd_pct = (self.peak - value) / self.peak * 100
+            if self.current_drawdown is None:
+                self.current_drawdown = {'start': len(self), 'peak': self.peak, 'lowest': value, 'dd_pct': dd_pct}
+            elif value < self.current_drawdown['lowest']:
+                self.current_drawdown['lowest'] = value
+                self.current_drawdown['dd_pct'] = dd_pct
+    
+    def stop(self):
+        """Called when backtesting is finished"""
+        if self.current_drawdown is not None:
+            self.drawdowns.append(self.current_drawdown)
+                
+    def get_analysis(self):
+        if not self.drawdowns:
+            return {'max_drawdown': 0, 'avg_drawdown': 0, 'drawdowns': []}
+            
+        max_dd = max(dd['dd_pct'] for dd in self.drawdowns)
+        avg_dd = sum(dd['dd_pct'] for dd in self.drawdowns) / len(self.drawdowns)
+        
+        return {
+            'max_drawdown': max_dd,
+            'avg_drawdown': avg_dd,
+            'drawdowns': self.drawdowns
+        }
+
+
+class StrategyDataCollector:
+    """Collects and saves strategy performance data"""
+    
+    def __init__(self):
+        self.base_path = Path("strategy_database") / "Triple_SMA"
+        self.base_path.mkdir(parents=True, exist_ok=True)
+        self.current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+    def save_backtest_results(self, strategy_name, results, strategy_params, data_info, trades_data, initial_capital, leverage):
+        """Save strategy results to JSON file"""
+        
+        # Process trades data
+        processed_trades = []
+        for trade in trades_data:
+            if isinstance(trade['datetime'], datetime):
+                trade = trade.copy()  # Create a copy to avoid modifying original
+                trade['datetime'] = trade['datetime'].strftime("%Y-%m-%d %H:%M:%S")
+            processed_trades.append(trade)
+        
+        strategy_data = {
+            "timestamp": self.current_timestamp,
+            "strategy_name": strategy_name,
+            "strategy_type": "Triple SMA",
+            "strategy_description": "Triple SMA crossover strategy with RSI filter",
+            "data_info": data_info,
+            "parameters": {
+                "fast_sma": strategy_params.get("fast_sma", 5),
+                "medium_sma": strategy_params.get("medium_sma", 8),
+                "slow_sma": strategy_params.get("slow_sma", 13),
+                "rsi": strategy_params.get("rsi", 14),
+                "stop_loss": strategy_params.get("stop_loss", 0.01),
+                "take_profit": strategy_params.get("take_profit", 0.01)
+            },
+            "performance": {
+                "initial_capital": initial_capital,
+                "final_equity": results.get("Equity Final [$]", 0),
+                "total_return_pct": results.get("Return [%]", 0),
+                "buy_hold_return_pct": results.get("Buy & Hold Return [%]", 0),
+                "max_drawdown_pct": results.get("Max. Drawdown [%]", 0),
+                "avg_drawdown_pct": results.get("Avg. Drawdown [%]", 0),
+                "sharpe_ratio": results.get("Sharpe Ratio", 0),
+                "profit_factor": results.get("Profit Factor", 0),
+                "sqn": results.get("SQN", 0),
+                "win_rate_pct": results.get("Win Rate [%]", 0),
+                "expectancy": self.calculate_expectancy(processed_trades),
+                "avg_trade_pct": results.get("Avg. Trade [%]", 0),
+                "max_trade_duration": results.get("Max. Trade Duration", 0),
+                "avg_trade_duration": results.get("Avg. Trade Duration", 0),
+                "total_trades": results.get("# Trades", 0),
+                "exposure_time_pct": results.get("Exposure Time [%]", 0)
+            },
+            "risk_management": {
+                "position_sizing": "Dynamic (5% per trade)",
+                "leverage": leverage,
+                "stop_loss_type": "Fixed percentage",
+                "take_profit_type": "Fixed percentage",
+                "max_position_size": "100% of equity"
+            },
+            "trades": processed_trades
+        }
+        
+        # Save to file
+        filename = f"Triple_SMA_{data_info['symbol']}_{data_info['timeframe']}_{self.current_timestamp}.json"
+        filepath = self.base_path / filename
+        
+        with open(filepath, 'w') as f:
+            json.dump(strategy_data, f, indent=4)
+        
+        return filepath
+    
+    @staticmethod
+    def calculate_expectancy(trades):
+        """Calculate strategy expectancy"""
+        if not trades:
+            return 0
+            
+        win_sum = sum(trade['pnl'] for trade in trades if trade['pnl'] > 0)
+        loss_sum = sum(abs(trade['pnl']) for trade in trades if trade['pnl'] < 0)
+        wins = sum(1 for trade in trades if trade['pnl'] > 0)
+        losses = sum(1 for trade in trades if trade['pnl'] < 0)
+        
+        total_trades = len(trades)
+        if total_trades == 0:
+            return 0
+            
+        win_rate = wins / total_trades if total_trades > 0 else 0
+        loss_rate = losses / total_trades if total_trades > 0 else 0
+        
+        avg_win = win_sum / wins if wins > 0 else 0
+        avg_loss = loss_sum / losses if losses > 0 else 0
+        
+        expectancy = (win_rate * avg_win) - (loss_rate * avg_loss)
+        return expectancy
+
+def run_backtest(data, plot=False, verbose=True, **kwargs):
     cerebro = bt.Cerebro()
 
     feed = bt.feeds.PandasData(
@@ -170,24 +316,34 @@ def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
     )
     cerebro.adddata(feed)
 
-    # Pass strategy parameters via kwargs
-    cerebro.addstrategy(TrippleSMA_Strategy, **kwargs)
+    # Extract strategy parameters from kwargs or use defaults
+    strategy_params = {
+        "fast_sma": kwargs.get("fast_sma", 5),
+        "medium_sma": kwargs.get("medium_sma", 8),
+        "slow_sma": kwargs.get("slow_sma", 13),
+        "rsi": kwargs.get("rsi", 14),
+        "stop_loss": kwargs.get("stop_loss", 0.01),
+        "take_profit": kwargs.get("take_profit", 0.01)
+    }
+
+    # Add strategy with parameters
+    cerebro.addstrategy(TrippleSMA_Strategy, **strategy_params)
     
     initial_cash = 100.0
+    leverage = 50  # Default leverage
+    
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.setcommission(
-        commission=0.0002,               # your commission rate
-        commtype=bt.CommInfoBase.COMM_PERC,
-        # leverage=50,                     # set leverage
-        margin=1.0/10                    # margin requirement (for 50x leverage)
+        commission=0.0002,
+        margin=1.0 / leverage,
+        commtype=bt.CommInfoBase.COMM_PERC
     )
-    cerebro.broker.set_slippage_perc(0.0001)
-    # Add analyzers
+    
+    # Update analyzers
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", riskfreerate=0.0)
     cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
-    cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
-    cerebro.addanalyzer(bt.analyzers.TimeReturn, _name="time_return")
+    cerebro.addanalyzer(DetailedDrawdownAnalyzer, _name="detailed_drawdown")
     cerebro.addanalyzer(TradeRecorder, _name='trade_recorder')
 
     if plot:
@@ -222,7 +378,7 @@ def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
         trades_analysis = {}
 
     try:
-        drawdown_analysis = strat.analyzers.drawdown.get_analysis()
+        drawdown_analysis = strat.analyzers.detailed_drawdown.get_analysis()
     except Exception as e:
         print(f"Error accessing drawdown analysis: {e}")
         drawdown_analysis = {}
@@ -330,6 +486,34 @@ def run_backtest(data, plot=False, verbose=True, optimize=False, **kwargs):
         print(f"Sharpe Ratio: {float(formatted_results['Sharpe Ratio']):,.2f}")
         print(f"Profit Factor: {float(formatted_results['Profit Factor']):,.2f}")
         print(f"SQN: {float(formatted_results['SQN']):,.2f}")
+
+    # Create data info dictionary
+    data_info = {
+        "symbol": kwargs.get("symbol", "Unknown"),
+        "timeframe": kwargs.get("timeframe", "Unknown"),
+        "start_date": data.datetime.iloc[0].strftime("%Y-%m-%d"),
+        "end_date": data.datetime.iloc[-1].strftime("%Y-%m-%d"),
+        "data_source": kwargs.get("data_source", "Unknown"),
+        "total_bars": len(data)
+    }
+    
+    # Get trade data
+    trades_data = strat.analyzers.trade_recorder.trades  # Changed from get_analysis()
+    
+    # Save comprehensive results
+    collector = StrategyDataCollector()
+    saved_path = collector.save_backtest_results(
+        strategy_name="Triple_SMA",
+        results=formatted_results,
+        strategy_params=strategy_params,
+        data_info=data_info,
+        trades_data=trades_data,  # Pass the trades list directly
+        initial_capital=initial_cash,
+        leverage=leverage
+    )
+    
+    if verbose:
+        print(f"\nStrategy data saved to: {saved_path}")
 
     return formatted_results
 
@@ -481,8 +665,20 @@ if __name__ == "__main__":
             data_df = pd.read_csv(data_path)
             data_df["datetime"] = pd.to_datetime(data_df["datetime"])
             
-            # Run backtest
-            results = run_backtest(data_df, verbose=False)
+            # Run backtest with strategy parameters
+            results = run_backtest(
+                data_df,
+                verbose=False,
+                symbol=symbol,
+                timeframe=timeframe,
+                data_source="Bybit",
+                fast_sma=5,
+                medium_sma=8,
+                slow_sma=13,
+                rsi=14,
+                stop_loss=0.01,
+                take_profit=0.01
+            )
             
             # Add symbol and timeframe to results
             results['symbol'] = symbol

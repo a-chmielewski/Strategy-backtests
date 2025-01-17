@@ -10,6 +10,7 @@ import math
 from collections import deque
 import json
 import traceback
+from pathlib import Path
 
 random.seed(42)
 
@@ -140,30 +141,6 @@ class EMACrossStrategy(bt.Strategy):
             print(f"Trade info - Status: {trade.status}, Size: {trade.size}, "
                   f"Price: {trade.price}, PnL: {trade.pnl}")
 
-    def notify_order(self, order):
-        if order.status == order.Completed:
-            if not order.parent:  # This is an entry order
-                # Record trade start
-                self.active_trades.append({
-                    'entry_time': self.data.datetime.datetime(0),
-                    'entry_price': order.executed.price,
-                    'type': 'long' if order.isbuy() else 'short',
-                    'size': order.executed.size
-                })
-            else:  # This is an exit order
-                if self.active_trades:
-                    trade = self.active_trades.pop()
-                    # Record trade exit
-                    self.trade_exits.append({
-                        'entry_time': trade['entry_time'],
-                        'entry_price': trade['entry_price'],
-                        'exit_time': self.data.datetime.datetime(0),
-                        'exit_price': order.executed.price,
-                        'type': f"{trade['type']}_exit",
-                        'pnl': (order.executed.price - trade['entry_price']) * trade['size'] if trade['type'] == 'long' 
-                              else (trade['entry_price'] - order.executed.price) * trade['size']
-                    })
-
 def calculate_sqn(trades):
     """Calculate System Quality Number using individual trade data"""
     try:
@@ -185,27 +162,120 @@ def calculate_sqn(trades):
         return 0.0
 
 class TradeRecorder(bt.Analyzer):
-    """Custom analyzer to record individual trade results for SQN calculation"""
-    
+    """
+    A custom analyzer to record trade details upon entry (when trade just opened)
+    and exit (when the trade closes). This ensures that we store and retrieve
+    trade details by the same reference, avoiding the `order.ref` vs `trade.ref`
+    mismatch.
+    """
+
     def __init__(self):
         super(TradeRecorder, self).__init__()
-        self.trades = []
-        self.current_trade = None
-
-    def get_analysis(self):
-        """Required method for Backtrader analyzers"""
-        return self
+        self.active_trades = {}  # Holds data for open trades by trade.ref
+        self.trades = []         # Holds final results for closed trades
 
     def notify_trade(self, trade):
+        """
+        Called by Backtrader when a trade is updated. We capture the trade
+        details upon opening (`trade.justopened`) and store them in `self.active_trades`.
+        When the trade closes (`trade.status == trade.Closed`), we finalize
+        the trade record and append it to `self.trades`.
+        """
+
+        # 1) Trade Just Opened
+        if trade.isopen and trade.justopened:
+            # Compute approximate "value" = entry_price * size
+            # Use abs(...) to handle both long (positive) and short (negative) trades
+            trade_value = abs(trade.price * trade.size)
+            
+            self.active_trades[trade.ref] = {
+                'entry_time': len(self.strategy),  # integer index of current bar
+                'entry_bar_datetime': self.strategy.datetime.datetime(),
+                'entry_price': trade.price,
+                'size': abs(trade.size),
+                'value': trade_value
+            }
+
+        # 2) Trade Closed
         if trade.status == trade.Closed:
-            self.trades.append({
-                'pnl': trade.pnlcomm,  # PnL including commission
-                'size': trade.size,
-                'price': trade.price,
-                'value': trade.value,
-                'commission': trade.commission,
-                'datetime': trade.data.datetime.datetime(0)
-            })
+            # Retrieve entry details
+            entry_data = self.active_trades.pop(trade.ref, None)
+            
+            if entry_data is not None:
+                # Calculate bars_held
+                entry_time = entry_data['entry_time']
+                exit_time = len(self.strategy)
+                bars_held = exit_time - entry_time
+
+                # We can use trade.price for the final execution price
+                exit_price = trade.price
+                
+                # Store final trade record
+                self.trades.append({
+                    'datetime': self.strategy.datetime.datetime(),  # exit bar's datetime
+                    'type': 'long' if trade.size > 0 else 'short',
+                    'size': entry_data['size'],
+                    'price': exit_price,           # Synonymous with 'exit_price'
+                    'value': entry_data['value'],  # From entry time
+                    'pnl': float(trade.pnl),
+                    'pnlcomm': float(trade.pnlcomm),
+                    'commission': float(trade.commission),
+                    'entry_price': entry_data['entry_price'],
+                    'exit_price': exit_price,
+                    'bars_held': bars_held
+                })
+
+    def get_analysis(self):
+        """
+        Required Backtrader method that returns the final stored results.
+        In this case, we return the list of closed trades.
+        """
+        return self.trades
+
+class DetailedDrawdownAnalyzer(bt.Analyzer):
+    """Analyzer providing detailed drawdown statistics"""
+    
+    def __init__(self):
+        super(DetailedDrawdownAnalyzer, self).__init__()
+        self.drawdowns = []
+        self.current_drawdown = None
+        self.peak = 0
+        self.equity_curve = []
+        
+    def next(self):
+        value = self.strategy.broker.getvalue()
+        self.equity_curve.append(value)
+        
+        if value > self.peak:
+            self.peak = value
+            if self.current_drawdown is not None:
+                self.drawdowns.append(self.current_drawdown)
+                self.current_drawdown = None
+        elif value < self.peak:
+            dd_pct = (self.peak - value) / self.peak * 100
+            if self.current_drawdown is None:
+                self.current_drawdown = {'start': len(self), 'peak': self.peak, 'lowest': value, 'dd_pct': dd_pct}
+            elif value < self.current_drawdown['lowest']:
+                self.current_drawdown['lowest'] = value
+                self.current_drawdown['dd_pct'] = dd_pct
+    
+    def stop(self):
+        """Called when backtesting is finished"""
+        if self.current_drawdown is not None:
+            self.drawdowns.append(self.current_drawdown)
+                
+    def get_analysis(self):
+        if not self.drawdowns:
+            return {'max_drawdown': 0, 'avg_drawdown': 0, 'drawdowns': []}
+            
+        max_dd = max(dd['dd_pct'] for dd in self.drawdowns)
+        avg_dd = sum(dd['dd_pct'] for dd in self.drawdowns) / len(self.drawdowns)
+        
+        return {
+            'drawdowns': self.drawdowns,
+            'max_drawdown': max_dd,
+            'avg_drawdown': avg_dd
+        }
 
 def run_backtest(data, verbose=True, **kwargs):
     """Run backtest with given parameters"""
@@ -226,15 +296,27 @@ def run_backtest(data, verbose=True, **kwargs):
     )
     cerebro.adddata(feed)
 
-    # Add strategy
-    cerebro.addstrategy(EMACrossStrategy)
+    # Extract strategy parameters from kwargs or use defaults
+    strategy_params = {
+        "ema_short": kwargs.get("ema_short", 9),
+        "ema_long": kwargs.get("ema_long", 80),
+        "stochastic_period": kwargs.get("stochastic_period", 12),
+        "stochastic_pfast": kwargs.get("stochastic_pfast", 5),
+        "stochastic_pslow": kwargs.get("stochastic_pslow", 3),
+        "stop_loss": kwargs.get("stop_loss", 0.01),
+        "take_profit": kwargs.get("take_profit", 0.01),
+    }
+
+    # Add strategy with parameters
+    cerebro.addstrategy(EMACrossStrategy, **strategy_params)
 
     initial_cash = 100.0
+    leverage = 10  # Move leverage to a variable
+    
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.setcommission(
         commission=0.0002,
-        margin=1.0 / 10,
-        # leverage=10,
+        margin=1.0 / leverage,  # Use leverage variable
         commtype=bt.CommInfoBase.COMM_PERC
     )
     cerebro.broker.set_slippage_perc(0.0001)
@@ -242,8 +324,7 @@ def run_backtest(data, verbose=True, **kwargs):
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", riskfreerate=0.0)
     cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
-    cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
-    cerebro.addanalyzer(bt.analyzers.TimeReturn, _name="time_return")
+    cerebro.addanalyzer(DetailedDrawdownAnalyzer, _name="detailed_drawdown")
     cerebro.addanalyzer(TradeRecorder, _name='trade_recorder')
 
     # Run backtest
@@ -272,7 +353,7 @@ def run_backtest(data, verbose=True, **kwargs):
         trades_analysis = {}
 
     try:
-        drawdown_analysis = strat.analyzers.drawdown.get_analysis()
+        drawdown_analysis = strat.analyzers.detailed_drawdown.get_analysis()
     except Exception as e:
         print(f"Error accessing drawdown analysis: {e}")
         drawdown_analysis = {}
@@ -370,6 +451,42 @@ def run_backtest(data, verbose=True, **kwargs):
         print(f"Profit Factor: {float(formatted_results['Profit Factor']):,.2f}")
         print(f"SQN: {float(formatted_results['SQN']):,.2f}")
 
+    # Get detailed trade data
+    trades_data = strat.analyzers.trade_recorder.get_analysis()
+    
+    # Get drawdown analysis
+    dd_analysis = strat.analyzers.detailed_drawdown.get_analysis()
+    
+    # Update formatted_results with correct drawdown values
+    formatted_results.update({
+        "Max. Drawdown [%]": dd_analysis.get('max_drawdown', 0),
+        "Avg. Drawdown [%]": dd_analysis.get('avg_drawdown', 0),
+    })
+    
+    # Create data info dictionary with strategy parameters
+    data_info = {
+        "symbol": kwargs.get("symbol", "Unknown"),
+        "timeframe": kwargs.get("timeframe", "Unknown"),
+        "start_date": data.datetime.iloc[0].strftime("%Y-%m-%d"),
+        "end_date": data.datetime.iloc[-1].strftime("%Y-%m-%d"),
+        "data_source": kwargs.get("data_source", "Unknown"),
+        "total_bars": len(data)
+    }
+    
+    # Save comprehensive results
+    collector = StrategyDataCollector()
+    saved_path = collector.save_backtest_results(
+        results=formatted_results,
+        strategy_params=strategy_params,
+        data_info=data_info,
+        trades_data=trades_data,
+        initial_capital=initial_cash,
+        leverage=leverage
+    )
+    
+    if verbose:
+        print(f"\nStrategy data saved to: {saved_path}")
+    
     return formatted_results
 
 def evaluate(individual, data):
@@ -614,6 +731,108 @@ def walk_forward_optimization(data, window_size_ratio=0.5, step_size_ratio=0.1):
 
     return results
 
+class StrategyDataCollector:
+    """Collects and stores comprehensive strategy backtest data"""
+    
+    def __init__(self, base_path="strategy_database"):
+        self.base_path = Path(base_path)
+        self.base_path.mkdir(parents=True, exist_ok=True)
+        self.current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    def save_backtest_results(self, results, strategy_params, data_info, trades_data, 
+                            initial_capital=100.0, leverage=10):
+        """Save comprehensive backtest results to JSON file"""
+        
+        # Convert trades_data to list if it's not already
+        trades_data = list(trades_data) if trades_data else []
+        
+        # Process trades
+        processed_trades = []
+        for trade in trades_data:
+            processed_trade = {
+                'datetime': trade['datetime'].strftime('%Y-%m-%d %H:%M:%S'),
+                'type': trade['type'],
+                'size': float(trade['size']),
+                'price': float(trade['price']),
+                'value': float(trade['value']),
+                'pnl': float(trade['pnl']),
+                'pnlcomm': float(trade['pnlcomm']),
+                'commission': float(trade['commission']),
+                'entry_price': float(trade['entry_price']),
+                'exit_price': float(trade['exit_price']),
+                'bars_held': int(trade['bars_held'])
+            }
+            processed_trades.append(processed_trade)
+        
+        # Create strategy data dictionary
+        strategy_data = {
+            "timestamp": self.current_timestamp,
+            "strategy_name": "EMACrossover",
+            "strategy_type": "Trend Following",
+            "strategy_description": "EMA Crossover with Stochastic Filter and Risk Management",
+            "data_info": data_info,
+            "parameters": strategy_params,
+            "performance": {
+                "initial_capital": initial_capital,
+                "final_equity": results.get("Equity Final [$]", 0),
+                "total_return_pct": results.get("Return [%]", 0),
+                "buy_hold_return_pct": results.get("Buy & Hold Return [%]", 0),
+                "max_drawdown_pct": results.get("Max. Drawdown [%]", 0),
+                "avg_drawdown_pct": results.get("Avg. Drawdown [%]", 0),
+                "sharpe_ratio": results.get("Sharpe Ratio", 0),
+                "profit_factor": results.get("Profit Factor", 0),
+                "sqn": results.get("SQN", 0),
+                "win_rate_pct": results.get("Win Rate [%]", 0),
+                "expectancy": self.calculate_expectancy(processed_trades),
+                "avg_trade_pct": results.get("Avg. Trade [%]", 0),
+                "max_trade_duration": results.get("Max. Trade Duration", 0),
+                "avg_trade_duration": results.get("Avg. Trade Duration", 0),
+                "total_trades": results.get("# Trades", 0),
+                "exposure_time_pct": results.get("Exposure Time [%]", 0)
+            },
+            "risk_management": {
+                "position_sizing": "Dynamic (5% per trade)",
+                "leverage": leverage,
+                "stop_loss_type": "Fixed percentage",
+                "take_profit_type": "Fixed percentage",
+                "max_position_size": "100% of equity"
+            },
+            "trades": processed_trades
+        }
+        
+        # Save to file
+        filename = f"EMACrossover_{data_info['symbol']}_{data_info['timeframe']}_{self.current_timestamp}.json"
+        filepath = self.base_path / filename
+        
+        with open(filepath, 'w') as f:
+            json.dump(strategy_data, f, indent=4)
+        
+        return filepath
+    
+    @staticmethod
+    def calculate_expectancy(trades):
+        """Calculate strategy expectancy"""
+        if not trades:
+            return 0
+            
+        win_sum = sum(trade['pnl'] for trade in trades if trade['pnl'] > 0)
+        loss_sum = sum(abs(trade['pnl']) for trade in trades if trade['pnl'] < 0)
+        wins = sum(1 for trade in trades if trade['pnl'] > 0)
+        losses = sum(1 for trade in trades if trade['pnl'] < 0)
+        
+        total_trades = len(trades)
+        if total_trades == 0:
+            return 0
+            
+        win_rate = wins / total_trades if total_trades > 0 else 0
+        loss_rate = losses / total_trades if total_trades > 0 else 0
+        
+        avg_win = win_sum / wins if wins > 0 else 0
+        avg_loss = loss_sum / losses if losses > 0 else 0
+        
+        expectancy = (win_rate * avg_win) - (loss_rate * avg_loss)
+        return expectancy
+
 if __name__ == "__main__":
     # Define all data paths
     data_paths = [
@@ -652,8 +871,21 @@ if __name__ == "__main__":
             data_df = pd.read_csv(data_path)
             data_df["datetime"] = pd.to_datetime(data_df["datetime"])
             
-            # Run backtest
-            results = run_backtest(data_df, verbose=False)
+            # Run backtest with strategy parameters
+            results = run_backtest(
+                data_df,
+                verbose=False,
+                symbol=symbol,
+                timeframe=timeframe,
+                data_source="Bybit",
+                ema_short=9,  # Add default strategy parameters
+                ema_long=80,
+                stochastic_period=12,
+                stochastic_pfast=5,
+                stochastic_pslow=3,
+                stop_loss=0.01,
+                take_profit=0.01
+            )
             
             # Add symbol and timeframe to results
             results['symbol'] = symbol

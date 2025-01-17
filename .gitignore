@@ -156,3 +156,5 @@ data/bybit-SOLUSDT-5m-20241128-to-20250108.csv
 data/bybit-BTCUSDT-5m-20240714-to-20250110.csv
 data/bybit-ETHUSDT-5m-20240714-to-20250110.csv
 data/bybit-XRPUSDT-5m-20240714-to-20250110.csv
+/strategy_database
+/data
