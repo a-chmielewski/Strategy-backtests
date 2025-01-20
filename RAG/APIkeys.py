@@ -1,0 +1,3 @@
+OpenAI_api_key = "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"
+
+Anthropic_api_key = "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"
