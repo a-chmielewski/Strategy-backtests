@@ -159,3 +159,5 @@ data/bybit-XRPUSDT-5m-20240714-to-20250110.csv
 RAG/strategy_database
 RAG/embeddings
 /data
+RAG/APIkeys.py
+RAG/scripts/APIkeys.py
