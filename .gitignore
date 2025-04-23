@@ -161,3 +161,4 @@ RAG/embeddings
 /data
 RAG/APIkeys.py
 RAG/scripts/APIkeys.py
+rules.txt
