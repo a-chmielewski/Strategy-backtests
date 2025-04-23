@@ -162,3 +162,4 @@ RAG/embeddings
 RAG/APIkeys.py
 RAG/scripts/APIkeys.py
 rules.txt
+cursor_project_rules/*

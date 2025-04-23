@@ -8,6 +8,7 @@ from math import ceil
 from datetime import timezone
 import traceback
 from collections import defaultdict
+import shutil
 
 def timeframe_to_sec(timeframe):
     """Convert timeframe string to seconds."""
@@ -122,20 +123,33 @@ def get_bybit_data(symbol, timeframe, start_date, end_date=None):
     return dataframe
 
 if __name__ == "__main__":
-    # Example usage
-    symbol = 'XRP/USDT'
-    timeframe = '5m'
-    
-    try:
-        # Set date range to last 6 months
-        end_date = datetime.datetime.now(timezone.utc)
-        start_date = end_date - datetime.timedelta(days=180)
-        
-        df = get_bybit_data(symbol, timeframe, start_date, end_date)
-        
-        print("\nSample Data:")
-        print(df.head())
-        
-    except Exception as e:
-        print(f"Error: {e}")
-        print("Full error traceback:", traceback.format_exc())
+    # Delete all Bybit data CSV files in the data folder
+    data_folder = 'data'
+    for filename in os.listdir(data_folder):
+        if filename.startswith('bybit-') and filename.endswith('.csv'):
+            file_path = os.path.join(data_folder, filename)
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                print(f"Failed to delete {file_path}: {e}")
+
+    # Pairs and timeframes to fetch
+    pairs = [
+        'BTC/USDT', 'ETH/USDT', '1000PEPE/USDT', 'ADA/USDT',
+        'DOGE/USDT', 'LINK/USDT', 'SOL/USDT', 'XRP/USDT'
+    ]
+    timeframes = ['1m', '5m']
+
+    # Date range: last 2 months
+    end_date = datetime.datetime.now(timezone.utc)
+    start_date = end_date - datetime.timedelta(days=60)
+
+    for symbol in pairs:
+        for timeframe in timeframes:
+            try:
+                print(f"\nFetching {symbol} {timeframe}...")
+                df = get_bybit_data(symbol, timeframe, start_date, end_date)
+                print(f"Fetched {len(df)} rows for {symbol} {timeframe}")
+            except Exception as e:
+                print(f"Error fetching {symbol} {timeframe}: {e}")
+                print("Full error traceback:", traceback.format_exc())
