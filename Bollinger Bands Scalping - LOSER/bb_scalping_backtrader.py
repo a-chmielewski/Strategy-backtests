@@ -3,11 +3,12 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import warnings
-import logging
 import math
 import traceback
 from pathlib import Path
 import json
+import concurrent.futures
+import os
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -465,11 +466,8 @@ def calculate_sqn(trades):
         print(f"Error calculating SQN: {str(e)}")
         return 0.0
 
-def run_backtest(data, plot=False, verbose=True, **kwargs):
-    """Run backtest with the given data and parameters"""
+def run_backtest(data, verbose=True, **kwargs):
     cerebro = bt.Cerebro()
-
-    # Add data feed
     feed = bt.feeds.PandasData(
         dataname=data,
         timeframe=bt.TimeFrame.Minutes,
@@ -483,8 +481,6 @@ def run_backtest(data, plot=False, verbose=True, **kwargs):
         openinterest=None,
     )
     cerebro.adddata(feed)
-
-    # Extract strategy parameters from kwargs or use defaults
     strategy_params = {
         "n": kwargs.get("n", 20),
         "ndev": kwargs.get("ndev", 2.0),
@@ -501,246 +497,177 @@ def run_backtest(data, plot=False, verbose=True, **kwargs):
         "use_macd": kwargs.get("use_macd", True),
         "use_candlestick": kwargs.get("use_candlestick", True)
     }
-
-    # Add strategy with parameters
     cerebro.addstrategy(BollingerBandsStrategy, **strategy_params)
-    
     initial_cash = 100.0
-    leverage = 50  # Default leverage
-    
+    leverage = 10
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.setcommission(
         commission=0.0002,
-        margin=1.0 / leverage,
-        commtype=bt.CommInfoBase.COMM_PERC
+        commtype=bt.CommInfoBase.COMM_PERC,
+        margin=1.0 / leverage
     )
-    
-    # Update analyzers
+    cerebro.broker.set_slippage_perc(0.0001)
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", riskfreerate=0.0)
     cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
     cerebro.addanalyzer(DetailedDrawdownAnalyzer, _name="detailed_drawdown")
     cerebro.addanalyzer(TradeRecorder, _name='trade_recorder')
-
-    if plot:
-        cerebro.addobserver(bt.observers.BuySell)
-        cerebro.addobserver(bt.observers.Value)
-        cerebro.addobserver(bt.observers.DrawDown)
-
-    # Run backtest and get results
     results = cerebro.run()
-    strat = results[0]
-
-    # Calculate metrics with safe getters
+    if len(results) > 0:
+        strat = results[0][0] if isinstance(results[0], (list, tuple)) else results[0]
+    else:
+        raise ValueError("No results returned from backtest")
+    trades = strat.analyzers.trade_recorder.get_analysis()
+    trades_df = pd.DataFrame(trades) if trades else pd.DataFrame()
+    total_trades = len(trades_df)
+    win_trades = trades_df[trades_df['pnl'] > 0] if not trades_df.empty else pd.DataFrame()
+    loss_trades = trades_df[trades_df['pnl'] < 0] if not trades_df.empty else pd.DataFrame()
+    winrate = (len(win_trades) / total_trades * 100) if total_trades > 0 else 0
+    avg_trade = trades_df['pnl'].mean() if not trades_df.empty else 0
+    best_trade = trades_df['pnl'].max() if not trades_df.empty else 0
+    worst_trade = trades_df['pnl'].min() if not trades_df.empty else 0
+    max_drawdown = 0
+    avg_drawdown = 0
     try:
-        trade_recorder = strat.analyzers.trade_recorder.get_analysis()
-        sqn = calculate_sqn(trade_recorder if hasattr(trade_recorder, 'trades') else [])
-    except Exception as e:
-        print(f"Error accessing trade recorder: {e}")
-        sqn = 0.0
-    
-    try:
-        trades_analysis = strat.analyzers.trades.get_analysis()
-    except Exception as e:
-        print(f"Error accessing trades analysis: {e}")
-        trades_analysis = {}
-
-    try:
-        drawdown_analysis = strat.analyzers.detailed_drawdown.get_analysis()
+        dd = strat.analyzers.detailed_drawdown.get_analysis()
+        max_drawdown = dd.get('max_drawdown', 0)
+        avg_drawdown = dd.get('avg_drawdown', 0)
     except Exception as e:
         print(f"Error accessing drawdown analysis: {e}")
-        drawdown_analysis = {}
-
-    # Safe getter function
-    def safe_get(d, *keys, default=0):
-        try:
-            for key in keys:
-                if d is None:
-                    return default
-                d = d[key]
-            return d if d is not None else default
-        except (KeyError, AttributeError, TypeError):
-            return default
-
-    # Calculate metrics
     final_value = cerebro.broker.getvalue()
     total_return = (final_value - initial_cash) / initial_cash * 100
-
-    # Get Sharpe Ratio
     try:
         sharpe_ratio = strat.analyzers.sharpe.get_analysis()["sharperatio"]
         if sharpe_ratio is None:
             sharpe_ratio = 0.0
     except:
         sharpe_ratio = 0.0
-
-    # Format results
+    profit_factor = (win_trades['pnl'].sum() / abs(loss_trades['pnl'].sum())) if not loss_trades.empty else 0
     formatted_results = {
         "Start": data.datetime.iloc[0].strftime("%Y-%m-%d"),
         "End": data.datetime.iloc[-1].strftime("%Y-%m-%d"),
         "Duration": f"{(data.datetime.iloc[-1] - data.datetime.iloc[0]).days} days",
-        "Exposure Time [%]": (safe_get(trades_analysis, "total", "total", default=0) / len(data)) * 100,
         "Equity Final [$]": final_value,
-        "Equity Peak [$]": final_value + (safe_get(drawdown_analysis, "max_drawdown", default=0) * final_value / 100),
         "Return [%]": total_return,
-        "Buy & Hold Return [%]": ((data["Close"].iloc[-1] / data["Close"].iloc[0] - 1) * 100),
-        "Max. Drawdown [%]": safe_get(drawdown_analysis, "max_drawdown", default=0),
-        "Avg. Drawdown [%]": safe_get(drawdown_analysis, "avg_drawdown", default=0),
-        "Max. Drawdown Duration": safe_get(drawdown_analysis, "max", "len", default=0),
-        "Avg. Drawdown Duration": safe_get(drawdown_analysis, "average", "len", default=0),
-        "# Trades": safe_get(trades_analysis, "total", "total", default=0),
-        "Win Rate [%]": (safe_get(trades_analysis, "won", "total", default=0) / 
-                        max(safe_get(trades_analysis, "total", "total", default=1), 1) * 100),
-        "Best Trade [%]": safe_get(trades_analysis, "won", "pnl", "max", default=0),
-        "Worst Trade [%]": safe_get(trades_analysis, "lost", "pnl", "min", default=0),
-        "Avg. Trade [%]": safe_get(trades_analysis, "pnl", "net", "average", default=0),
-        "Max. Trade Duration": safe_get(trades_analysis, "len", "max", default=0),
-        "Avg. Trade Duration": safe_get(trades_analysis, "len", "average", default=0),
-        "Profit Factor": (safe_get(trades_analysis, "won", "pnl", "total", default=0) / 
-                         max(abs(safe_get(trades_analysis, "lost", "pnl", "total", default=1)), 1)),
+        "# Trades": total_trades,
+        "Win Rate [%]": winrate,
+        "Avg. Trade": avg_trade,
+        "Best Trade": best_trade,
+        "Worst Trade": worst_trade,
+        "Max. Drawdown [%]": max_drawdown,
+        "Avg. Drawdown [%]": avg_drawdown,
         "Sharpe Ratio": float(sharpe_ratio),
-        "SQN": sqn
+        "Profit Factor": profit_factor,
     }
-
-    # Add expectancy calculation
-    win_rate = formatted_results['Win Rate [%]'] / 100
-    loss_rate = 1 - win_rate
-    avg_win = safe_get(trades_analysis, 'won', 'pnl', 'average', default=0)
-    avg_loss = abs(safe_get(trades_analysis, 'lost', 'pnl', 'average', default=0))
-    
-    expectancy = (win_rate * avg_win) - (loss_rate * avg_loss)
-    formatted_results['Expectancy'] = expectancy
-
     if verbose:
         print("\n=== Strategy Performance Report ===")
         print(f"\nPeriod: {formatted_results['Start']} - {formatted_results['End']} ({formatted_results['Duration']})")
         print(f"Initial Capital: ${initial_cash:,.2f}")
         print(f"Final Capital: ${float(formatted_results['Equity Final [$]']):,.2f}")
         print(f"Total Return: {float(formatted_results['Return [%]']):,.2f}%")
-        print(f"Buy & Hold Return: {float(formatted_results['Buy & Hold Return [%]']):,.2f}%")
         print(f"\nTotal Trades: {int(formatted_results['# Trades'])}")
-        print(f"Expectancy: {float(formatted_results['Expectancy']):,.2f}")
-        print(f"Win Rate: {float(formatted_results['Win Rate [%]']):,.2f}%")
-        print(f"Best Trade: {float(formatted_results['Best Trade [%]']):,.2f}%")
-        print(f"Worst Trade: {float(formatted_results['Worst Trade [%]']):,.2f}%")
-        print(f"Avg. Trade: {float(formatted_results['Avg. Trade [%]']):,.2f}%")
-        print(f"\nMax Drawdown: {float(formatted_results['Max. Drawdown [%]']):,.2f}%")
-        print(f"Sharpe Ratio: {float(formatted_results['Sharpe Ratio']):,.2f}")
-        print(f"Profit Factor: {float(formatted_results['Profit Factor']):,.2f}")
-        print(f"SQN: {float(formatted_results['SQN']):,.2f}")
-
-    # Create data info dictionary
-    data_info = {
-        "symbol": kwargs.get("symbol", "Unknown"),
-        "timeframe": kwargs.get("timeframe", "Unknown"),
-        "start_date": data.datetime.iloc[0].strftime("%Y-%m-%d"),
-        "end_date": data.datetime.iloc[-1].strftime("%Y-%m-%d"),
-        "data_source": kwargs.get("data_source", "Unknown"),
-        "total_bars": len(data)
-    }
-    
-    # Get trade data
-    trades_data = strat.analyzers.trade_recorder.get_analysis()
-    
-    # Save comprehensive results
-    collector = StrategyDataCollector()
-    saved_path = collector.save_backtest_results(
-        strategy_name="BB_Scalping",
-        results=formatted_results,
-        strategy_params=strategy_params,
-        data_info=data_info,
-        trades_data=trades_data,
-        initial_capital=initial_cash,
-        leverage=leverage
-    )
-    
-    if verbose:
-        print(f"\nStrategy data saved to: {saved_path}")
-
+        print(f"Win Rate: {float(formatted_results['Win Rate [%]']):.2f}%")
+        print(f"Best Trade: {float(formatted_results['Best Trade']):.2f}")
+        print(f"Worst Trade: {float(formatted_results['Worst Trade']):.2f}")
+        print(f"Avg. Trade: {float(formatted_results['Avg. Trade']):.2f}")
+        print(f"\nMax Drawdown: {float(formatted_results['Max. Drawdown [%]']):.2f}%")
+        print(f"Sharpe Ratio: {float(formatted_results['Sharpe Ratio']):.2f}")
+        print(f"Profit Factor: {float(formatted_results['Profit Factor']):.2f}")
     return formatted_results
 
+def process_file(args):
+    filename, data_folder = args
+    data_path = os.path.join(data_folder, filename)
+    try:
+        parts = filename.split('-')
+        symbol = parts[1]
+        timeframe = parts[2]
+        print(f"\nTesting {symbol} {timeframe}...")
+        data_df = pd.read_csv(data_path)
+        data_df["datetime"] = pd.to_datetime(data_df["datetime"])
+        results = run_backtest(
+            data_df,
+            verbose=False,
+            symbol=symbol,
+            timeframe=timeframe,
+            data_source="Bybit",
+            n=20,
+            ndev=2.0,
+            bb_touch_threshold=0.002,
+            sl_pct=0.01,
+            tp_pct=0.01,
+            rsi_period=14,
+            rsi_oversold=30,
+            rsi_overbought=70,
+            macd_fast=12,
+            macd_slow=26,
+            macd_signal=9,
+            use_rsi=False,
+            use_macd=True,
+            use_candlestick=True
+        )
+        summary = {
+            'symbol': symbol,
+            'timeframe': timeframe,
+            'winrate': results.get('Win Rate [%]', 0),
+            'final_equity': results.get('Equity Final [$]', 0),
+            'total_trades': results.get('# Trades', 0),
+            'max_drawdown': results.get('Max. Drawdown [%]', 0)
+        }
+        return (summary, filename)
+    except Exception as e:
+        print(f"Error processing {data_path}: {str(e)}")
+        print(traceback.format_exc())
+        return (None, filename)
+
 if __name__ == "__main__":
-    # Define all data paths
-    data_paths = [
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-1000PEPEUSDT-1m-20240929-to-20241128.csv",
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-1000PEPEUSDT-5m-20240929-to-20241128.csv",
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ADAUSDT-1m-20240929-to-20241128.csv",
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ADAUSDT-5m-20240929-to-20241128.csv",
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-1m-20240929-to-20241128.csv",
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-5m-20240929-to-20241128.csv",
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-DOGEUSDT-1m-20240929-to-20241128.csv",
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-DOGEUSDT-5m-20240929-to-20241128.csv",
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ETHUSDT-1m-20240929-to-20241128.csv",
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-ETHUSDT-5m-20240929-to-20241128.csv",
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-1m-20240929-to-20241128.csv",
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-LINKUSDT-5m-20240929-to-20241128.csv",
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-1m-20240929-to-20241128.csv",
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-SOLUSDT-5m-20240929-to-20241128.csv",
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-1m-20240929-to-20241128.csv",
-        r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-XRPUSDT-5m-20240929-to-20241128.csv",
-    ]
-
-    # Store results for all datasets
-    all_results = []
-
-    # Test each dataset
-    for data_path in data_paths:
+    try:
+        data_folder = os.path.join(os.path.dirname(__file__), '..', 'data')
+        data_folder = os.path.abspath(data_folder)
+        files = [f for f in os.listdir(data_folder) if f.startswith('bybit-') and f.endswith('.csv')]
+        all_results = []
+        failed_files = []
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            results = list(executor.map(process_file, [(f, data_folder) for f in files]))
+            for summary, fname in results:
+                if summary is not None:
+                    all_results.append(summary)
+                else:
+                    failed_files.append(fname)
+        sorted_results = sorted(all_results, key=lambda x: x['winrate'], reverse=True)[:3]
+        print("\n=== Top 3 Results by Win Rate ===")
+        for i, result in enumerate(sorted_results, 1):
+            print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
+            print(f"Win Rate: {result['winrate']:.2f}%")
+            print(f"Total Trades: {result['total_trades']}")
+            print(f"Final Equity: {result['final_equity']}")
+            print(f"Max Drawdown: {result['max_drawdown']:.2f}%")
+        if failed_files:
+            print("\nThe following files failed to process:")
+            for fname in failed_files:
+                print(f"- {fname}")
+        if all_results:
+            pd.DataFrame(all_results).to_csv("partial_bb_scalping_results.csv", index=False)
+    except Exception as e:
+        print("\nException occurred in main execution:")
+        print(str(e))
+        print(traceback.format_exc())
         try:
-            # Extract symbol and timeframe from path
-            filename = data_path.split('\\')[-1]
-            symbol = filename.split('-')[1]
-            timeframe = filename.split('-')[2]
-            
-            print(f"\nTesting {symbol} {timeframe}...")
-            
-            # Load and process data
-            data_df = pd.read_csv(data_path)
-            data_df["datetime"] = pd.to_datetime(data_df["datetime"])
-            
-            # Run backtest with strategy parameters
-            results = run_backtest(
-                data_df,
-                verbose=False,
-                symbol=symbol,
-                timeframe=timeframe,
-                data_source="Bybit",
-                n=20,
-                ndev=2.0,
-                bb_touch_threshold=0.002,
-                sl_pct=0.01,
-                tp_pct=0.01,
-                rsi_period=14,
-                rsi_oversold=30,
-                rsi_overbought=70,
-                macd_fast=12,
-                macd_slow=26,
-                macd_signal=9,
-                use_rsi=False,
-                use_macd=True,
-                use_candlestick=True
-            )
-            
-            # Add symbol and timeframe to results
-            results['symbol'] = symbol
-            results['timeframe'] = timeframe
-            
-            all_results.append(results)
-            
-        except Exception as e:
-            print(f"Error processing {data_path}: {str(e)}")
-            continue
-
-    # Sort results by win rate and get top 3
-    sorted_results = sorted(all_results, key=lambda x: x['Win Rate [%]'], reverse=True)[:3]
-
-    # Print top 3 results
-    print("\n=== Top 3 Results by Win Rate ===")
-    for i, result in enumerate(sorted_results, 1):
-        print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
-        print(f"Win Rate: {result['Win Rate [%]']:.2f}%")
-        print(f"Total Trades: {result['# Trades']}")
-        print(f"Total Return: {result['Return [%]']:.2f}%")
-        print(f"Final Equity: {result['Equity Final [$]']}")
-        print(f"Sharpe Ratio: {result['Sharpe Ratio']:.2f}")
-        print(f"Max Drawdown: {result['Max. Drawdown [%]']:.2f}%")
-        print(f"Profit Factor: {result['Profit Factor']:.2f}") 
+            sorted_results = sorted(all_results, key=lambda x: x['winrate'], reverse=True)[:3]
+            print("\n=== Top 3 Results by Win Rate (Partial) ===")
+            for i, result in enumerate(sorted_results, 1):
+                print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
+                print(f"Win Rate: {result['winrate']:.2f}%")
+                print(f"Total Trades: {result['total_trades']}")
+                print(f"Final Equity: {result['final_equity']}")
+                print(f"Max Drawdown: {result['max_drawdown']:.2f}%")
+            if failed_files:
+                print("\nThe following files failed to process:")
+                for fname in failed_files:
+                    print(f"- {fname}")
+            if all_results:
+                pd.DataFrame(all_results).to_csv("partial_bb_scalping_results.csv", index=False)
+        except Exception as e2:
+            print("\nError printing partial results:")
+            print(str(e2))
+            print(traceback.format_exc()) 

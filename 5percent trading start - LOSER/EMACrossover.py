@@ -5,7 +5,6 @@ import math
 import traceback
 import os
 import concurrent.futures
-import sys
 
 class EMACrossStrategy(bt.Strategy):
     """Base template for creating trading strategies"""
