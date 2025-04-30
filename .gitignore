@@ -1,14 +1,14 @@
 AI API keys.txt
 moje notatki.txt
 pomysly z czata.txt
-5percent trading start - LOSER/emacross_hof_results.json
-5percent trading start - LOSER/opis.txt
-5percent trading start - LOSER/__pycache__/EMACrossover.cpython-312.pyc
-9 20 Crossover - LOSER/2517-SUBMISSION - Manuscript File (.pdf_.docx)-10018-1-10-20230911.pdf
-9 20 Crossover - LOSER/opis.txt
-9 20 Crossover - LOSER/__pycache__/bollinger.cpython-312.pyc
-9 20 Crossover - LOSER/__pycache__/EMA_BB_pSAR_RSI.cpython-312.pyc
-9 20 Crossover - LOSER/__pycache__/EMA.cpython-312.pyc
+5percent trading start/emacross_hof_results.json
+5percent trading start/opis.txt
+5percent trading start/__pycache__/EMACrossover.cpython-312.pyc
+9 20 Crossover/2517-SUBMISSION - Manuscript File (.pdf_.docx)-10018-1-10-20230911.pdf
+9 20 Crossover/opis.txt
+9 20 Crossover/__pycache__/bollinger.cpython-312.pyc
+9 20 Crossover/__pycache__/EMA_BB_pSAR_RSI.cpython-312.pyc
+9 20 Crossover/__pycache__/EMA.cpython-312.pyc
 Ask-Bid Spread Exploitation - LOSER/ask-bid-spread-backtest.py
 Ask-Bid Spread Exploitation - LOSER/BidAskSpreadStrategy_min_spread-0_0001,max_spread-0_002,volume_factor-1_2,max_volatility-0_02,position_size-0_02,max_positions-3,hold_time-5_.html
 Ask-Bid Spread Exploitation - LOSER/BidAskSpreadStrategy_min_spread-0_0002,max_spread-0_002,volume_factor-1_5,max_volatility-0_02,position_size-0_02,max_positions-3,hold_time-5_.html
@@ -25,8 +25,8 @@ Bollinger Bands Scalping - LOSER/BB_Scalping_Backtest_STOCH+RSI.html
 Bollinger Bands Scalping - LOSER/BB_Scalping_backtrader_58WR.png
 Bollinger Bands Scalping - LOSER/BB_Scalping_Backtrader_100USDtest.png
 Bollinger Bands Scalping - LOSER/Notatki.txt
-Chande Momentum Oscillator - LOSER/opis.txt
-Chande Momentum Oscillator - LOSER/__pycache__/ChandeMomentumOscillator.cpython-312.pyc
+Chande Momentum Oscillator/opis.txt
+Chande Momentum Oscillator/__pycache__/ChandeMomentumOscillator.cpython-312.pyc
 data/bybit_futures_pairs_20241209.csv
 data/bybit-1000PEPEUSDT-1m-20240929-to-20241128.csv
 data/bybit-1000PEPEUSDT-5m-20240929-to-20241128.csv
@@ -52,8 +52,8 @@ data/tick_data/BTCUSDT/BTCUSDT_ticks_20241209_142725.csv
 data imports/bybit_keys.py
 data imports/cdp_api_key.py
 data imports/__pycache__/bybit_keys.cpython-312.pyc
-Double EMA with StochOsc - LOSER/opis.txt
-Double EMA with StochOsc - LOSER/__pycache__/double_EMA_StochOsc.cpython-312.pyc
+Double EMA with StochOsc/opis.txt
+Double EMA with StochOsc/__pycache__/double_EMA_StochOsc.cpython-312.pyc
 GE/requirements.txt
 logs/exchange_handler_20241212_133529.log
 logs/exchange_handler_20241212_133622.log
@@ -103,11 +103,11 @@ Strategies from analysis/__pycache__/mean_reversion.cpython-312.pyc
 Strategies from analysis/__pycache__/momentum_breakout.cpython-312.pyc
 Strategies from analysis/__pycache__/time_filtered_trend.cpython-312.pyc
 Strategies from analysis/__pycache__/volatility_adaptive_scalping.cpython-312.pyc
-Triple SMA - LOSER/opis.txt
-Triple SMA - LOSER/__pycache__/tripleSMA.cpython-312.pyc
+Triple SMA/opis.txt
+Triple SMA/__pycache__/tripleSMA.cpython-312.pyc
 ukrainskie strategie/opis.txt
-VWAP Breakout Intraday - LOSER/opis.txt
-VWAP Breakout Intraday - LOSER/__pycache__/VWAP_Breakout.cpython-312.pyc
+VWAP Breakout Intraday/opis.txt
+VWAP Breakout Intraday/__pycache__/VWAP_Breakout.cpython-312.pyc
 VWAP Scalping - LOSER/bybit_keys.py
 VWAP Scalping - LOSER/hof_results.json
 VWAP Scalping - LOSER/vwap_bot_external.log

@@ -1,10 +1,14 @@
 import backtrader as bt
 import pandas as pd
-import numpy as np
-import math
 import traceback
-import concurrent.futures
 import os
+import concurrent.futures
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from analyzers import TradeRecorder, DetailedDrawdownAnalyzer, SQNAnalyzer
+from results_logger import log_result
+
+LEVERAGE = 50
 
 class ChandeMomentumOscillator(bt.Indicator):
     """
@@ -41,8 +45,10 @@ class ChandeMomentumOscillatorStrategy(bt.Strategy):
         ("overbought", 50),    # Overbought level
         ("oversold", -50),     # Oversold level
         ("stop_loss", 0.01),   # Static 1% stop loss
-        ("take_profit", 0.01), # Static 1% take profit
+        ("take_profit", 0.02), # Static 1% take profit
         ("ma_period", 50),
+        ("cmo_slope_atr_mult", 1.5),  # ATR multiplier for CMO slope threshold
+        ("time_stop_bars", 30),       # Time stop in bars
     )
 
     def __init__(self):
@@ -57,6 +63,11 @@ class ChandeMomentumOscillatorStrategy(bt.Strategy):
         self.was_oversold = False
         self.was_overbought = False
         self.ma = bt.indicators.SMA(self.data.close, period=self.params.ma_period)
+        self.atr = bt.indicators.ATR(self.data, period=14)
+        self.order = None
+        self.trade_dir = {}  # Track trade direction by trade.ref
+        self.entry_bar = None
+        self.entry_side = None
 
     def calculate_position_size(self, current_price):
         try:
@@ -67,7 +78,7 @@ class ChandeMomentumOscillatorStrategy(bt.Strategy):
             else:
                 position_value = 100.0
 
-            leverage = 50
+            leverage = LEVERAGE
 
             # Adjust position size according to leverage
             position_size = (position_value * leverage) / current_price
@@ -78,111 +89,126 @@ class ChandeMomentumOscillatorStrategy(bt.Strategy):
             return 0
 
     def next(self):
-        """Define trading logic with trend filter"""
-        if len(self.data) < max(2, self.params.ma_period):
+        if self.order:
             return
-
-        # Determine the trend: bullish if price above MA, bearish otherwise
-        is_bullish = self.data.close[0] > self.ma[0]
-        is_bearish = self.data.close[0] < self.ma[0]
-
-        # Calculate CMO direction
+        # Seed prev_cmo after period bars, before MA warm-up
+        if len(self) == self.p.period:
+            self.prev_cmo = self.cmo[0]
+        if len(self) < self.p.ma_period:
+            return
+        is_bullish = self.data.close[0] > self.ma[0] * 1.002
+        is_bearish = self.data.close[0] < self.ma[0] * 0.998
         cmo_direction = self.cmo[0] - self.prev_cmo
         self.prev_cmo = self.cmo[0]
-
-        if not self.position:
+        # ATR-based CMO slope threshold
+        try:
+            atr_percent = (self.atr[0] / self.data.close[0]) * 100 if self.data.close[0] != 0 else 0
+            cmo_slope_threshold = self.p.cmo_slope_atr_mult * atr_percent
+        except Exception as e:
+            print(f"Error calculating ATR-based CMO slope threshold: {str(e)}")
+            cmo_slope_threshold = 2.0
+        if self.getposition().size == 0:
             position_size = self.calculate_position_size(self.data.close[0])
             if position_size <= 0:
                 return
-
-            # Buy signal: CMO moves up after being oversold and trend is bullish
-            if self.cmo[0] < self.params.oversold:
+            if self.cmo[0] < self.p.oversold:
                 self.was_oversold = True
-
-            if self.was_oversold and cmo_direction > 0 and self.cmo[0] > self.params.oversold and is_bullish:
+            if self.was_oversold and cmo_direction > cmo_slope_threshold and self.cmo[0] > self.p.oversold and is_bullish:
                 self.was_oversold = False
-                # Use static 1% levels for stop loss and take profit
-                stop_loss = self.data.close[0] * (1 - self.params.stop_loss)
-                take_profit = self.data.close[0] * (1 + self.params.take_profit)
-                
-                self.buy_bracket(
+                stop_loss = self.data.close[0] * (1 - self.p.stop_loss)
+                take_profit = self.data.close[0] * (1 + self.p.take_profit)
+                parent, stop, limit = self.buy_bracket(
                     size=position_size,
                     exectype=bt.Order.Market,
                     limitprice=take_profit,
                     stopprice=stop_loss
                 )
-
-        else:
-            # Sell signal: CMO moves down after being overbought and trend is bearish
-            if self.cmo[0] > self.params.overbought:
+                self.order = parent  # Track only the parent order
+                self.entry_bar = len(self)
+                self.entry_side = 'long'
+            if self.cmo[0] > self.p.overbought:
                 self.was_overbought = True
-
-            if self.was_overbought and cmo_direction < 0 and self.cmo[0] < self.params.overbought and is_bearish:
+            if self.was_overbought and cmo_direction < -cmo_slope_threshold and self.cmo[0] < self.p.overbought and is_bearish:
                 self.was_overbought = False
-                self.close()
-                position_size = self.calculate_position_size(self.data.close[0])
-                if position_size > 0:
-                    # Use static 1% levels for stop loss and take profit
-                    stop_loss = self.data.close[0] * (1 + self.params.stop_loss)
-                    take_profit = self.data.close[0] * (1 - self.params.take_profit)
-                    
-                    self.sell_bracket(
-                        size=position_size,
-                        exectype=bt.Order.Market,
-                        limitprice=take_profit,
-                        stopprice=stop_loss
-                    )
+                stop_loss = self.data.close[0] * (1 + self.p.stop_loss)
+                take_profit = self.data.close[0] * (1 - self.p.take_profit)
+                parent, stop, limit = self.sell_bracket(
+                    size=position_size,
+                    exectype=bt.Order.Market,
+                    limitprice=take_profit,
+                    stopprice=stop_loss
+                )
+                self.order = parent  # Track only the parent order
+        else:
+            # Active management: time-stop and MA cross exit
+            bars_held = len(self) - self.entry_bar if self.entry_bar is not None else 0
+            pos = self.getposition()
+            if pos.size > 0:
+                # Long position
+                if bars_held >= self.p.time_stop_bars or self.data.close[0] < self.ma[0]:
+                    self.close()
+                    self.entry_bar = None
+                    self.entry_side = None
+            elif pos.size < 0:
+                # Short position
+                if bars_held >= self.p.time_stop_bars or self.data.close[0] > self.ma[0]:
+                    self.close()
+                    self.entry_bar = None
+                    self.entry_side = None
 
     def notify_trade(self, trade):
+        if trade.isopen and trade.justopened:
+            self.trade_dir[trade.ref] = 'long' if trade.size > 0 else 'short'
         if not trade.isclosed:
             return
-
         try:
-            # Get entry and exit prices
-            entry_price = trade.price
-            exit_price = trade.history[-1].price if trade.history else self.data.close[0]
+            if trade.history:
+                entry_price = trade.price
+                exit_price = trade.history[-1].price
+            else:
+                entry_price = trade.price
+                exit_price = trade.price
             pnl = trade.pnl
-            
-            # Store trade exit information for visualization
+            direction = self.trade_dir.get(trade.ref, None)
+            trade_type = f'{direction}_exit' if direction in ('long', 'short') else 'unknown_exit'
             self.trade_exits.append({
-                'entry_time': trade.dtopen,  # Use trade's open datetime
-                'exit_time': trade.dtclose,  # Use trade's close datetime
+                'entry_time': trade.dtopen,
+                'exit_time': trade.dtclose,
                 'entry_price': entry_price,
                 'exit_price': exit_price,
-                'type': 'long_exit' if trade.size > 0 else 'short_exit',
+                'type': trade_type,
                 'pnl': pnl
             })
-            
+            if trade.ref in self.trade_dir:
+                del self.trade_dir[trade.ref]
         except Exception as e:
             print(f"Warning: Could not process trade: {str(e)}")
             print(f"Trade info - Status: {trade.status}, Size: {trade.size}, "
                   f"Price: {trade.price}, PnL: {trade.pnl}")
 
     def notify_order(self, order):
+        if self.order and order.ref == self.order.ref and order.status in [order.Completed, order.Canceled, order.Rejected]:
+            self.order = None
         if order.status == order.Completed:
             if not order.parent:  # This is an entry order
-                # Record trade start
                 self.active_trades.append({
                     'entry_time': self.data.datetime.datetime(0),
                     'entry_price': order.executed.price,
                     'type': 'long' if order.isbuy() else 'short',
                     'size': order.executed.size,
-                    'exit_orders': []  # Track multiple exit orders
+                    'exit_orders': []
                 })
             else:  # This is an exit order
                 if self.active_trades:
-                    trade = self.active_trades[-1]  # Get current trade without removing it
+                    trade = self.active_trades[-1]
                     trade['exit_orders'].append({
                         'exit_time': self.data.datetime.datetime(0),
                         'exit_price': order.executed.price,
                         'size': order.executed.size
                     })
-                    
-                    # If all size is closed, record the complete trade
                     total_exit_size = sum(exit_order['size'] for exit_order in trade['exit_orders'])
                     if abs(total_exit_size) >= abs(trade['size']):
-                        trade = self.active_trades.pop()  # Now remove the trade
-                        # Record each exit
+                        trade = self.active_trades.pop()
                         for exit_order in trade['exit_orders']:
                             self.trade_exits.append({
                                 'entry_time': trade['entry_time'],
@@ -193,127 +219,6 @@ class ChandeMomentumOscillatorStrategy(bt.Strategy):
                                 'pnl': (exit_order['exit_price'] - trade['entry_price']) * exit_order['size'] if trade['type'] == 'long' 
                                       else (trade['entry_price'] - exit_order['exit_price']) * exit_order['size']
                             })
-
-def calculate_sqn(trades):
-    """Calculate System Quality Number using individual trade data"""
-    try:
-        if not trades or len(trades) < 2:
-            return 0.0
-            
-        pnl_list = [trade['pnl'] for trade in trades]
-        avg_pnl = np.mean(pnl_list)
-        std_pnl = np.std(pnl_list)
-        
-        if std_pnl == 0:
-            return 0.0
-            
-        sqn = (avg_pnl / std_pnl) * math.sqrt(len(pnl_list))
-        return max(min(sqn, 100), -100)  # Limit SQN to reasonable range
-        
-    except Exception as e:
-        print(f"Error calculating SQN: {str(e)}")
-        return 0.0
-
-class TradeRecorder(bt.Analyzer):
-    """Custom analyzer to record individual trade results"""
-    
-    def __init__(self):
-        super(TradeRecorder, self).__init__()
-        self.active_trades = {}  # Holds data for open trades by trade.ref
-        self.trades = []         # Holds final results for closed trades
-
-    def notify_trade(self, trade):
-        """Called by Backtrader when a trade is updated"""
-        
-        # 1) Trade Just Opened
-        if trade.isopen and trade.justopened:
-            # Compute approximate "value" = entry_price * size
-            trade_value = abs(trade.price * trade.size)
-            
-            self.active_trades[trade.ref] = {
-                'entry_time': len(self.strategy),
-                'entry_bar_datetime': self.strategy.datetime.datetime(),
-                'entry_price': trade.price,
-                'size': abs(trade.size),
-                'value': trade_value
-            }
-
-        # 2) Trade Closed
-        if trade.status == trade.Closed:
-            # Retrieve entry details
-            entry_data = self.active_trades.pop(trade.ref, None)
-            
-            if entry_data is not None:
-                # Calculate bars_held
-                entry_time = entry_data['entry_time']
-                exit_time = len(self.strategy)
-                bars_held = exit_time - entry_time
-
-                # Store final trade record
-                self.trades.append({
-                    'datetime': self.strategy.datetime.datetime(),
-                    'type': 'long' if trade.size > 0 else 'short',
-                    'size': entry_data['size'],
-                    'price': trade.price,
-                    'value': entry_data['value'],
-                    'pnl': float(trade.pnl),
-                    'pnlcomm': float(trade.pnlcomm),
-                    'commission': float(trade.commission),
-                    'entry_price': entry_data['entry_price'],
-                    'exit_price': trade.price,
-                    'bars_held': bars_held
-                })
-
-    def get_analysis(self):
-        """Required method for Backtrader analyzers"""
-        return self.trades
-
-
-class DetailedDrawdownAnalyzer(bt.Analyzer):
-    """Analyzer providing detailed drawdown statistics"""
-    
-    def __init__(self):
-        super(DetailedDrawdownAnalyzer, self).__init__()
-        self.drawdowns = []
-        self.current_drawdown = None
-        self.peak = 0
-        self.equity_curve = []
-        
-    def next(self):
-        value = self.strategy.broker.getvalue()
-        self.equity_curve.append(value)
-        
-        if value > self.peak:
-            self.peak = value
-            if self.current_drawdown is not None:
-                self.drawdowns.append(self.current_drawdown)
-                self.current_drawdown = None
-        elif value < self.peak:
-            dd_pct = (self.peak - value) / self.peak * 100
-            if self.current_drawdown is None:
-                self.current_drawdown = {'start': len(self), 'peak': self.peak, 'lowest': value, 'dd_pct': dd_pct}
-            elif value < self.current_drawdown['lowest']:
-                self.current_drawdown['lowest'] = value
-                self.current_drawdown['dd_pct'] = dd_pct
-    
-    def stop(self):
-        """Called when backtesting is finished"""
-        if self.current_drawdown is not None:
-            self.drawdowns.append(self.current_drawdown)
-                
-    def get_analysis(self):
-        if not self.drawdowns:
-            return {'max_drawdown': 0, 'avg_drawdown': 0, 'drawdowns': []}
-            
-        max_dd = max(dd['dd_pct'] for dd in self.drawdowns)
-        avg_dd = sum(dd['dd_pct'] for dd in self.drawdowns) / len(self.drawdowns)
-        
-        return {
-            'drawdowns': self.drawdowns,
-            'max_drawdown': max_dd,
-            'avg_drawdown': avg_dd
-        }
-
 
 def run_backtest(data, verbose=True, **kwargs):
     cerebro = bt.Cerebro()
@@ -338,15 +243,17 @@ def run_backtest(data, verbose=True, **kwargs):
         "overbought": kwargs.get("overbought", 50),
         "oversold": kwargs.get("oversold", -50),
         "stop_loss": kwargs.get("stop_loss", 0.01),
-        "take_profit": kwargs.get("take_profit", 0.01),
-        "ma_period": kwargs.get("ma_period", 50)
+        "take_profit": kwargs.get("take_profit", 0.02),
+        "ma_period": kwargs.get("ma_period", 50),
+        "cmo_slope_atr_mult": kwargs.get("cmo_slope_atr_mult", 1.5),
+        "time_stop_bars": kwargs.get("time_stop_bars", 30),
     }
 
     # Add strategy with parameters
     cerebro.addstrategy(ChandeMomentumOscillatorStrategy, **strategy_params)
     
     initial_cash = 100.0
-    leverage = 50  # Default leverage
+    leverage = LEVERAGE  # Default leverage
     
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.setcommission(
@@ -361,6 +268,7 @@ def run_backtest(data, verbose=True, **kwargs):
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
     cerebro.addanalyzer(DetailedDrawdownAnalyzer, _name="detailed_drawdown")
     cerebro.addanalyzer(TradeRecorder, _name='trade_recorder')
+    cerebro.addanalyzer(SQNAnalyzer, _name='sqn')
 
     if verbose:
         cerebro.addobserver(bt.observers.BuySell)  # Show buy/sell points
@@ -378,26 +286,35 @@ def run_backtest(data, verbose=True, **kwargs):
     else:
         raise ValueError("No results returned from backtest")
 
+    trades = strat.analyzers.trade_recorder.get_analysis()
+    if trades:
+        trades_df = pd.DataFrame(trades)
+    else:
+        trades_df = pd.DataFrame()
+    total_trades = len(trades_df)
+    if not trades_df.empty:
+        win_trades = trades_df[trades_df['pnl'] > 0]
+        loss_trades = trades_df[trades_df['pnl'] < 0]
+        winrate = (len(win_trades) / total_trades * 100) if total_trades > 0 else 0
+        avg_trade = trades_df['pnl'].mean()
+        best_trade = trades_df['pnl'].max()
+        worst_trade = trades_df['pnl'].min()
+    else:
+        win_trades = pd.DataFrame()
+        loss_trades = pd.DataFrame()
+        winrate = 0
+        avg_trade = 0
+        best_trade = 0
+        worst_trade = 0
 
-    # Calculate metrics with safe getters
+    max_drawdown = 0
+    avg_drawdown = 0
     try:
-        trade_recorder = strat.analyzers.trade_recorder.get_analysis()
-        sqn = calculate_sqn(trade_recorder if hasattr(trade_recorder, 'trades') else [])
-    except Exception as e:
-        print(f"Error accessing trade recorder: {e}")
-        sqn = 0.0
-    
-    try:
-        trades_analysis = strat.analyzers.trades.get_analysis()
-    except Exception as e:
-        print(f"Error accessing trades analysis: {e}")
-        trades_analysis = {}
-
-    try:
-        drawdown_analysis = strat.analyzers.detailed_drawdown.get_analysis()
-    except Exception as e:
+        dd = strat.analyzers.detailed_drawdown.get_analysis()
+        max_drawdown = dd.get('max_drawdown', 0)
+        avg_drawdown = dd.get('avg_drawdown', 0)
+    except (AttributeError, KeyError) as e:
         print(f"Error accessing drawdown analysis: {e}")
-        drawdown_analysis = {}
 
     # Safe getter function
     def safe_get(d, *keys, default=0):
@@ -422,32 +339,29 @@ def run_backtest(data, verbose=True, **kwargs):
     except:
         sharpe_ratio = 0.0
 
+    profit_factor = (win_trades['pnl'].sum() / abs(loss_trades['pnl'].sum())) if not loss_trades.empty else 0
+    try:
+        sqn = strat.analyzers.sqn.get_analysis()['sqn']
+    except (AttributeError, KeyError):
+        sqn = 0.0
+
     # Format results
     formatted_results = {
         "Start": data.datetime.iloc[0].strftime("%Y-%m-%d"),
         "End": data.datetime.iloc[-1].strftime("%Y-%m-%d"),
         "Duration": f"{(data.datetime.iloc[-1] - data.datetime.iloc[0]).days} days",
-        "Exposure Time [%]": (safe_get(trades_analysis, "total", "total", default=0) / len(data)) * 100,
         "Equity Final [$]": final_value,
-        "Equity Peak [$]": final_value + (safe_get(drawdown_analysis, "max_drawdown", default=0) * final_value / 100),
         "Return [%]": total_return,
-        "Buy & Hold Return [%]": ((data["Close"].iloc[-1] / data["Close"].iloc[0] - 1) * 100),
-        "Max. Drawdown [%]": safe_get(drawdown_analysis, "max_drawdown", default=0),
-        "Avg. Drawdown [%]": safe_get(drawdown_analysis, "avg_drawdown", default=0),
-        "Max. Drawdown Duration": safe_get(drawdown_analysis, "max", "len", default=0),
-        "Avg. Drawdown Duration": safe_get(drawdown_analysis, "average", "len", default=0),
-        "# Trades": safe_get(trades_analysis, "total", "total", default=0),
-        "Win Rate [%]": (safe_get(trades_analysis, "won", "total", default=0) / 
-                        max(safe_get(trades_analysis, "total", "total", default=1), 1) * 100),
-        "Best Trade [%]": safe_get(trades_analysis, "won", "pnl", "max", default=0),
-        "Worst Trade [%]": safe_get(trades_analysis, "lost", "pnl", "min", default=0),
-        "Avg. Trade [%]": safe_get(trades_analysis, "pnl", "net", "average", default=0),
-        "Max. Trade Duration": safe_get(trades_analysis, "len", "max", default=0),
-        "Avg. Trade Duration": safe_get(trades_analysis, "len", "average", default=0),
-        "Profit Factor": (safe_get(trades_analysis, "won", "pnl", "total", default=0) / 
-                         max(abs(safe_get(trades_analysis, "lost", "pnl", "total", default=1)), 1)),
+        "# Trades": total_trades,
+        "Win Rate [%]": winrate,
+        "Avg. Trade": avg_trade,
+        "Best Trade": best_trade,
+        "Worst Trade": worst_trade,
+        "Max. Drawdown [%]": max_drawdown,
+        "Avg. Drawdown [%]": avg_drawdown,
         "Sharpe Ratio": float(sharpe_ratio),
-        "SQN": sqn
+        "Profit Factor": profit_factor,
+        "SQN": sqn,
     }
 
     # Print detailed statistics only if verbose is True
@@ -459,18 +373,15 @@ def run_backtest(data, verbose=True, **kwargs):
         print(f"Initial Capital: ${initial_cash:,.2f}")
         print(f"Final Capital: ${float(formatted_results['Equity Final [$]']):,.2f}")
         print(f"Total Return: {float(formatted_results['Return [%]']):,.2f}%")
-        print(
-            f"Buy & Hold Return: {float(formatted_results['Buy & Hold Return [%]']):,.2f}%"
-        )
         print(f"\nTotal Trades: {int(formatted_results['# Trades'])}")
-        print(f"Win Rate: {float(formatted_results['Win Rate [%]']):,.2f}%")
-        print(f"Best Trade: {float(formatted_results['Best Trade [%]']):,.2f}%")
-        print(f"Worst Trade: {float(formatted_results['Worst Trade [%]']):,.2f}%")
-        print(f"Avg. Trade: {float(formatted_results['Avg. Trade [%]']):,.2f}%")
-        print(f"\nMax Drawdown: {float(formatted_results['Max. Drawdown [%]']):,.2f}%")
-        print(f"Sharpe Ratio: {float(formatted_results['Sharpe Ratio']):,.2f}")
-        print(f"Profit Factor: {float(formatted_results['Profit Factor']):,.2f}")
-        print(f"SQN: {float(formatted_results['SQN']):,.2f}")
+        print(f"Win Rate: {float(formatted_results['Win Rate [%]']):.2f}%")
+        print(f"Best Trade: {float(formatted_results['Best Trade']):.2f}")
+        print(f"Worst Trade: {float(formatted_results['Worst Trade']):.2f}")
+        print(f"Avg. Trade: {float(formatted_results['Avg. Trade']):.2f}")
+        print(f"\nMax Drawdown: {float(formatted_results['Max. Drawdown [%]']):.2f}%")
+        print(f"Sharpe Ratio: {float(formatted_results['Sharpe Ratio']):.2f}")
+        print(f"Profit Factor: {float(formatted_results['Profit Factor']):.2f}")
+        print(f"SQN: {float(formatted_results['SQN']):.2f}")
 
     return formatted_results
 
@@ -487,15 +398,21 @@ def process_file(args):
         results = run_backtest(
             data_df,
             verbose=False,
-            symbol=symbol,
-            timeframe=timeframe,
-            data_source="Bybit",
             period=14,
             overbought=50,
             oversold=-50,
             stop_loss=0.01,
             take_profit=0.01,
-            ma_period=50
+            ma_period=50,
+            cmo_slope_atr_mult=1.5,
+            time_stop_bars=30
+        )
+        log_result(
+            strategy="ChandeMomentumOscillator",
+            coinpair=symbol,
+            timeframe=timeframe,
+            leverage=LEVERAGE,
+            results=results
         )
         summary = {
             'symbol': symbol,

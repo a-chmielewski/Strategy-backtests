@@ -3,33 +3,91 @@ import pandas as pd
 import numpy as np
 import math
 import traceback
-import os
 import concurrent.futures
-from analyzers import TradeRecorder, DetailedDrawdownAnalyzer, SQNAnalyzer
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from results_logger import log_result
+from analyzers import TradeRecorder, DetailedDrawdownAnalyzer, SQNAnalyzer
 
 LEVERAGE = 50
-class StrategyTemplate(bt.Strategy):
+
+class BBStrategy(bt.Strategy):
+    """Base template for creating trading strategies"""
+    
     params = (
-        ("param1", 20),
-        ("param2", 14),
+        # Add strategy parameters here
+        ("period", 21),
+        ("devfactor", 2.0),
+        ("stop_k", 1.0),
+        ("target_k", 2.0),
     )
+
     def __init__(self):
-        pass  # Add indicator initialization here
+        """Initialize strategy components"""
+        # Initialize indicators
+        self.bollinger = bt.indicators.BollingerBands(self.data.close, period=self.params.period, devfactor=self.params.devfactor)
+        self.bb_upper = self.bollinger.top
+        self.bb_lower = self.bollinger.bot
+        self.bb_mid = self.bollinger.mid
+        self.entry_bar = None
+
     def calculate_position_size(self, current_price):
         current_equity = self.broker.getvalue()
-        position_value = current_equity if current_equity < 100 else 100.0
-        leverage = 50
+        if current_equity < 100:
+            position_value = current_equity
+        else:
+            position_value = 100.0
+        leverage = LEVERAGE
         try:
             position_size = (position_value * leverage) / current_price
         except ZeroDivisionError:
             print("Error in calculate_position_size: Division by zero")
             return 0
         return position_size
+
     def next(self):
-        pass  # Add trading logic here
+        """Define trading logic"""
+        # Only trade if enough data for slope
+        if len(self) < self.params.period + 1:
+            return
+        # Exit logic: close if price touches mid-band or after 10 bars
+        if self.position:
+            if self.entry_bar is not None:
+                bars_held = len(self) - self.entry_bar
+                if (self.position.size > 0 and self.data.close[0] >= self.bb_mid[0]) or \
+                   (self.position.size < 0 and self.data.close[0] <= self.bb_mid[0]) or \
+                   (bars_held >= 10):
+                    self.close()
+                    self.entry_bar = None
+                    return
+        if not self.position:  # If we have no position
+            position_size = self.calculate_position_size(self.data.close[0])
+            # Calculate midline slope (current - previous)
+            mid_slope = self.bb_mid[0] - self.bb_mid[-5]
+            band_width = self.bb_upper[0] - self.bb_lower[0]
+            stop_k = self.params.stop_k
+            target_k = self.params.target_k
+            # Fade lower band only if previous close was inside and current close is below band, and midline slope is flat or rising
+            if self.data.close[-1] >= self.bb_lower[-1] and self.data.close[0] < self.bb_lower[0] and mid_slope >= 0:
+                stop_loss = self.data.close[0] - stop_k * band_width
+                take_profit = self.data.close[0] + target_k * band_width
+                self.buy_bracket(size=position_size, exectype=bt.Order.Market,
+                                 stopprice=stop_loss,
+                                 limitprice=take_profit)
+                self.entry_bar = len(self)
+            # Fade upper band only if previous close was inside and current close is above band, and midline slope is flat or falling
+            elif self.data.close[-1] <= self.bb_upper[-1] and self.data.close[0] > self.bb_upper[0] and mid_slope <= 0:
+                stop_loss = self.data.close[0] + stop_k * band_width
+                take_profit = self.data.close[0] - target_k * band_width
+                self.sell_bracket(size=position_size, exectype=bt.Order.Market, 
+                                stopprice=stop_loss,
+                                limitprice=take_profit)
+                self.entry_bar = len(self)
+        
 
 def run_backtest(data, verbose=True, **kwargs):
+    """Run backtest with given parameters"""
     cerebro = bt.Cerebro()
     feed = bt.feeds.PandasData(
         dataname=data,
@@ -45,12 +103,14 @@ def run_backtest(data, verbose=True, **kwargs):
     )
     cerebro.adddata(feed)
     strategy_params = {
-        "param1": kwargs.get("param1", 20),
-        "param2": kwargs.get("param2", 14),
+        "period": kwargs.get("period", 21),
+        "devfactor": kwargs.get("devfactor", 2.0),
+        "stop_k": kwargs.get("stop_k", 1.0),
+        "target_k": kwargs.get("target_k", 2.0),
     }
-    cerebro.addstrategy(StrategyTemplate, **strategy_params)
+    cerebro.addstrategy(BBStrategy, **strategy_params)
     initial_cash = 100.0
-    leverage = 50
+    leverage = LEVERAGE
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.setcommission(
         commission=0.0002,
@@ -69,6 +129,7 @@ def run_backtest(data, verbose=True, **kwargs):
         strat = results[0][0] if isinstance(results[0], (list, tuple)) else results[0]
     else:
         raise ValueError("No results returned from backtest")
+    # Vectorized trade metrics
     trades = strat.analyzers.trade_recorder.get_analysis()
     if trades:
         trades_df = pd.DataFrame(trades)
@@ -106,6 +167,10 @@ def run_backtest(data, verbose=True, **kwargs):
     except (AttributeError, KeyError):
         sharpe_ratio = 0.0
     profit_factor = (win_trades['pnl'].sum() / abs(loss_trades['pnl'].sum())) if not loss_trades.empty else 0
+    try:
+        sqn = strat.analyzers.sqn.get_analysis()['sqn']
+    except (AttributeError, KeyError):
+        sqn = 0.0
     formatted_results = {
         "Start": data.datetime.iloc[0].strftime("%Y-%m-%d"),
         "End": data.datetime.iloc[-1].strftime("%Y-%m-%d"),
@@ -121,6 +186,7 @@ def run_backtest(data, verbose=True, **kwargs):
         "Avg. Drawdown [%]": avg_drawdown,
         "Sharpe Ratio": float(sharpe_ratio),
         "Profit Factor": profit_factor,
+        "SQN": sqn,
     }
     if verbose:
         print("\n=== Strategy Performance Report ===")
@@ -136,6 +202,7 @@ def run_backtest(data, verbose=True, **kwargs):
         print(f"\nMax Drawdown: {float(formatted_results['Max. Drawdown [%]']):.2f}%")
         print(f"Sharpe Ratio: {float(formatted_results['Sharpe Ratio']):.2f}")
         print(f"Profit Factor: {float(formatted_results['Profit Factor']):.2f}")
+        print(f"SQN: {float(formatted_results['SQN']):.2f}")
     return formatted_results
 
 def process_file(args):
@@ -158,16 +225,18 @@ def process_file(args):
     results = run_backtest(
         data_df,
         verbose=False,
-        param1=20,
-        param2=14
+        period=21,
+        devfactor=2.0,
+        stop_k=1.0,
+        target_k=2.0
     )
     log_result(
-            strategy="StrategyTemplate",
-            coinpair=symbol,
-            timeframe=timeframe,
-            leverage=LEVERAGE,
-            results=results
-        )
+        strategy="BBStrategy",
+        coinpair=symbol,
+        timeframe=timeframe,
+        leverage=LEVERAGE,
+        results=results
+    )
     summary = {
         'symbol': symbol,
         'timeframe': timeframe,
@@ -179,16 +248,12 @@ def process_file(args):
     return (summary, filename)
 
 if __name__ == "__main__":
-    data_folder = os.path.join(os.path.dirname(__file__), '..', 'data')
-    data_folder = os.path.abspath(data_folder)
     try:
+        data_folder = os.path.join(os.path.dirname(__file__), '..', 'data')
+        data_folder = os.path.abspath(data_folder)
         files = [f for f in os.listdir(data_folder) if f.startswith('bybit-') and f.endswith('.csv')]
-    except (OSError, IOError) as e:
-        print(f"Error listing files in {data_folder}: {str(e)}")
-        files = []
-    all_results = []
-    failed_files = []
-    try:
+        all_results = []
+        failed_files = []
         with concurrent.futures.ProcessPoolExecutor() as executor:
             results = list(executor.map(process_file, [(f, data_folder) for f in files]))
             for summary, fname in results:
@@ -208,28 +273,30 @@ if __name__ == "__main__":
             print("\nThe following files failed to process:")
             for fname in failed_files:
                 print(f"- {fname}")
+        # Optionally write partial results to disk
         if all_results:
             pd.DataFrame(all_results).to_csv("partial_backtest_results.csv", index=False)
     except Exception as e:
-        print("\nException occurred during processing:")
+        print("\nException occurred in main execution:")
         print(str(e))
         print(traceback.format_exc())
-        if all_results:
-            try:
-                sorted_results = sorted(all_results, key=lambda x: x['winrate'], reverse=True)[:3]
-                print("\n=== Top 3 Results by Win Rate (Partial) ===")
-                for i, result in enumerate(sorted_results, 1):
-                    print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
-                    print(f"Win Rate: {result['winrate']:.2f}%")
-                    print(f"Total Trades: {result['total_trades']}")
-                    print(f"Final Equity: {result['final_equity']}")
-                    print(f"Max Drawdown: {result['max_drawdown']:.2f}%")
-                if failed_files:
-                    print("\nThe following files failed to process:")
-                    for fname in failed_files:
-                        print(f"- {fname}")
+        # Print whatever results were collected so far
+        try:
+            sorted_results = sorted(all_results, key=lambda x: x['winrate'], reverse=True)[:3]
+            print("\n=== Top 3 Results by Win Rate (Partial) ===")
+            for i, result in enumerate(sorted_results, 1):
+                print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
+                print(f"Win Rate: {result['winrate']:.2f}%")
+                print(f"Total Trades: {result['total_trades']}")
+                print(f"Final Equity: {result['final_equity']}")
+                print(f"Max Drawdown: {result['max_drawdown']:.2f}%")
+            if failed_files:
+                print("\nThe following files failed to process:")
+                for fname in failed_files:
+                    print(f"- {fname}")
+            if all_results:
                 pd.DataFrame(all_results).to_csv("partial_backtest_results.csv", index=False)
-            except Exception as e2:
-                print("\nError printing partial results:")
-                print(str(e2))
-                print(traceback.format_exc()) 
+        except Exception as e2:
+            print("\nError printing partial results:")
+            print(str(e2))
+            print(traceback.format_exc())

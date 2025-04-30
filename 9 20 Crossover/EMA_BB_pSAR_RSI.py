@@ -1,151 +1,125 @@
 import backtrader as bt
 import pandas as pd
 import numpy as np
+from datetime import datetime
 import math
 import traceback
+from pathlib import Path
+import json
 import os
 import concurrent.futures
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from results_logger import log_result
+from analyzers import TradeRecorder, DetailedDrawdownAnalyzer, SQNAnalyzer
 
-class TripleSMA_Strategy(bt.Strategy):
+LEVERAGE = 50
+
+class EMA_BB_PSAR_RSI(bt.Strategy):
+    """Base template for creating trading strategies"""
+
     params = (
-        ("fast_sma", 5),
-        ("medium_sma", 8),
-        ("slow_sma", 13),
-        ("rsi", 14),
+        ("ema_short", 20),
+        ("ema_long", 50),
+        ("sar_step", 0.02), 
+        ("sar_max", 0.2),
+        ("rsi_period", 14),
+        ("rsi_overbought", 70),
+        ("rsi_oversold", 30),
+        ("bb_period", 21),
+        ("bb_devfactor", 2.0),
         ("stop_loss", 0.01),
-        ("take_profit", 0.01),
+        ("take_profit", 0.02),
+        ("ema_gap_threshold", 0.0005),
     )
 
     def __init__(self):
-        self.fast_sma = bt.indicators.SMA(self.data.close, period=self.p.fast_sma)
-        self.medium_sma = bt.indicators.SMA(self.data.close, period=self.p.medium_sma)
-        self.slow_sma = bt.indicators.SMA(self.data.close, period=self.p.slow_sma)
-        self.rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi)
+        """Initialize strategy components"""
+        # Initialize indicators
+        self.ema_short = bt.indicators.EMA(self.data.close, period=self.p.ema_short)
+        self.ema_long = bt.indicators.EMA(self.data.close, period=self.p.ema_long)
+        self.sar = bt.indicators.ParabolicSAR(self.data, af=self.p.sar_step, afmax=self.p.sar_max)
+        self.rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi_period)
+        self.bb = bt.indicators.BollingerBands(self.data.close, period=self.p.bb_period, devfactor=self.p.bb_devfactor)
+        self.bb_upper = self.bb.top
+        self.bb_lower = self.bb.bot
 
     def calculate_position_size(self, current_price):
         try:
             current_equity = self.broker.getvalue()
-            position_value = current_equity if current_equity < 100 else 100.0
-            leverage = 50
+
+            if current_equity < 100:
+                position_value = current_equity
+            else:
+                position_value = 100.0
+
+            leverage = LEVERAGE
+
+            # Adjust position size according to leverage
             position_size = (position_value * leverage) / current_price
+
             return position_size
         except Exception as e:
             print(f"Error in calculate_position_size: {str(e)}")
             return 0
-
+        
     def next(self):
-        if len(self.data) < 2:
+        """Define trading logic"""
+        min_bars = max(self.p.ema_long, self.p.bb_period, self.p.rsi_period) + 1
+        if len(self) < min_bars:
             return
-        closing_price = self.data.close[0]
-        if not self.position:
-            position_size = self.calculate_position_size(closing_price)
+            
+        if self.getposition().size == 0:
+            position_size = self.calculate_position_size(self.data.close[0])
+            
+            # Skip if size is too small
             if position_size <= 0:
                 return
-            bullish_crossover = self.fast_sma[0] > self.medium_sma[0] and self.fast_sma[0] > self.slow_sma[0]
-            bearish_crossover = self.fast_sma[0] < self.medium_sma[0] and self.fast_sma[0] < self.slow_sma[0]
-            if bullish_crossover and self.rsi[0] < 70:
+                
+            ema_gap = abs(self.ema_short[0] - self.ema_long[0])
+            price = self.data.close[0]
+            gap_ok = ema_gap > (self.p.ema_gap_threshold * price)
+            
+            # Group conditions for better readability
+            trend_buy = (self.ema_short > self.ema_long and self.data.close[0] > self.sar[0])
+            momentum_buy = (
+                self.rsi[0] <= self.p.rsi_oversold and
+                self.data.close[0] < self.bb_lower[0] and
+                self.data.close[-1] > self.bb_lower[-1]
+            )
+            trend_sell = (self.ema_short < self.ema_long and self.data.close[0] < self.sar[0])
+            momentum_sell = (
+                self.rsi[0] >= self.p.rsi_overbought and
+                self.data.close[0] > self.bb_upper[0] and
+                self.data.close[-1] < self.bb_upper[-1]
+            )
+                
+            # BUY if either trend or momentum signal and EMA gap is sufficient
+            if (trend_buy or momentum_buy) and gap_ok:
                 self.buy_bracket(
                     size=position_size,
                     exectype=bt.Order.Market,
-                    stopprice=closing_price * (1 - self.p.stop_loss),
-                    limitprice=closing_price * (1 + self.p.take_profit),
+                    limitprice=price * (1 + self.p.take_profit),
+                    stopprice=price * (1 - self.p.stop_loss)
                 )
-            elif bearish_crossover and self.rsi[0] > 30:
+                
+            # SELL if either trend or momentum signal and EMA gap is sufficient
+            elif (trend_sell or momentum_sell) and gap_ok:
                 self.sell_bracket(
                     size=position_size,
                     exectype=bt.Order.Market,
-                    stopprice=closing_price * (1 + self.p.stop_loss),
-                    limitprice=closing_price * (1 - self.p.take_profit),
+                    limitprice=price * (1 - self.p.take_profit),
+                    stopprice=price * (1 + self.p.stop_loss)
                 )
 
-def calculate_sqn(trades):
-    try:
-        if not trades or len(trades) < 2:
-            return 0.0
-        pnl_list = [trade['pnl'] for trade in trades]
-        avg_pnl = np.mean(pnl_list)
-        std_pnl = np.std(pnl_list)
-        if std_pnl == 0:
-            return 0.0
-        sqn = (avg_pnl / std_pnl) * math.sqrt(len(pnl_list))
-        return max(min(sqn, 100), -100)
-    except Exception as e:
-        print(f"Error calculating SQN: {str(e)}")
-        return 0.0
-
-class TradeRecorder(bt.Analyzer):
-    def __init__(self):
-        super(TradeRecorder, self).__init__()
-        self.active_trades = {}
-        self.trades = []
-    def notify_trade(self, trade):
-        if trade.isopen and trade.justopened:
-            trade_value = abs(trade.price * trade.size)
-            self.active_trades[trade.ref] = {
-                'entry_time': len(self.strategy),
-                'entry_bar_datetime': self.strategy.datetime.datetime(),
-                'entry_price': trade.price,
-                'size': abs(trade.size),
-                'value': trade_value
-            }
-        if trade.status == trade.Closed:
-            entry_data = self.active_trades.pop(trade.ref, None)
-            if entry_data is not None:
-                entry_time = entry_data['entry_time']
-                exit_time = len(self.strategy)
-                bars_held = exit_time - entry_time
-                exit_price = trade.price
-                self.trades.append({
-                    'datetime': self.strategy.datetime.datetime(),
-                    'type': 'long' if trade.size > 0 else 'short',
-                    'size': entry_data['size'],
-                    'price': exit_price,
-                    'value': entry_data['value'],
-                    'pnl': float(trade.pnl),
-                    'pnlcomm': float(trade.pnlcomm),
-                    'commission': float(trade.commission),
-                    'entry_price': entry_data['entry_price'],
-                    'exit_price': exit_price,
-                    'bars_held': bars_held
-                })
-    def get_analysis(self):
-        return self.trades
-
-class DetailedDrawdownAnalyzer(bt.Analyzer):
-    def __init__(self):
-        super(DetailedDrawdownAnalyzer, self).__init__()
-        self.drawdowns = []
-        self.current_drawdown = None
-        self.peak = 0
-        self.equity_curve = []
-    def next(self):
-        value = self.strategy.broker.getvalue()
-        self.equity_curve.append(value)
-        if value > self.peak:
-            self.peak = value
-            if self.current_drawdown is not None:
-                self.drawdowns.append(self.current_drawdown)
-                self.current_drawdown = None
-        elif value < self.peak:
-            dd_pct = (self.peak - value) / self.peak * 100
-            if self.current_drawdown is None:
-                self.current_drawdown = {'start': len(self), 'peak': self.peak, 'lowest': value, 'dd_pct': dd_pct}
-            elif value < self.current_drawdown['lowest']:
-                self.current_drawdown['lowest'] = value
-                self.current_drawdown['dd_pct'] = dd_pct
-    def stop(self):
-        if self.current_drawdown is not None:
-            self.drawdowns.append(self.current_drawdown)
-    def get_analysis(self):
-        if not self.drawdowns:
-            return {'max_drawdown': 0, 'avg_drawdown': 0, 'drawdowns': []}
-        max_dd = max(dd['dd_pct'] for dd in self.drawdowns)
-        avg_dd = sum(dd['dd_pct'] for dd in self.drawdowns) / len(self.drawdowns)
-        return {
-            'drawdowns': self.drawdowns,
-            'max_drawdown': max_dd,
-            'avg_drawdown': avg_dd
-        }
+        # Manual exit on EMA trend reversal
+        if self.position:
+            if self.position.size > 0 and self.ema_short < self.ema_long:
+                self.close()
+                return
+            elif self.position.size < 0 and self.ema_short > self.ema_long:
+                self.close()
+                return
 
 def run_backtest(data, verbose=True, **kwargs):
     cerebro = bt.Cerebro()
@@ -163,49 +137,65 @@ def run_backtest(data, verbose=True, **kwargs):
     )
     cerebro.adddata(feed)
     strategy_params = {
-        "fast_sma": kwargs.get("fast_sma", 5),
-        "medium_sma": kwargs.get("medium_sma", 8),
-        "slow_sma": kwargs.get("slow_sma", 13),
-        "rsi": kwargs.get("rsi", 14),
+        "ema_short": kwargs.get("ema_short", 9),
+        "ema_long": kwargs.get("ema_long", 21),
+        "sar_step": kwargs.get("sar_step", 0.02),
+        "sar_max": kwargs.get("sar_max", 0.2),
+        "rsi_period": kwargs.get("rsi_period", 14),
+        "rsi_overbought": kwargs.get("rsi_overbought", 60),
+        "rsi_oversold": kwargs.get("rsi_oversold", 40),
+        "bb_period": kwargs.get("bb_period", 21),
+        "bb_devfactor": kwargs.get("bb_devfactor", 2.0),
         "stop_loss": kwargs.get("stop_loss", 0.01),
-        "take_profit": kwargs.get("take_profit", 0.01),
+        "take_profit": kwargs.get("take_profit", 0.01)
     }
-    cerebro.addstrategy(TripleSMA_Strategy, **strategy_params)
+    cerebro.addstrategy(EMA_BB_PSAR_RSI, **strategy_params)
     initial_cash = 100.0
-    leverage = 50
+    leverage = LEVERAGE
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.setcommission(
         commission=0.0002,
         margin=1.0 / leverage,
         commtype=bt.CommInfoBase.COMM_PERC
     )
-    cerebro.broker.set_slippage_perc(0.0001)
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", riskfreerate=0.0)
     cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
     cerebro.addanalyzer(DetailedDrawdownAnalyzer, _name="detailed_drawdown")
     cerebro.addanalyzer(TradeRecorder, _name='trade_recorder')
+    cerebro.addanalyzer(SQNAnalyzer, _name='sqn')
     results = cerebro.run()
     if len(results) > 0:
         strat = results[0][0] if isinstance(results[0], (list, tuple)) else results[0]
     else:
         raise ValueError("No results returned from backtest")
     trades = strat.analyzers.trade_recorder.get_analysis()
-    trades_df = pd.DataFrame(trades) if trades else pd.DataFrame()
+    if trades:
+        trades_df = pd.DataFrame(trades)
+    else:
+        trades_df = pd.DataFrame()
     total_trades = len(trades_df)
-    win_trades = trades_df[trades_df['pnl'] > 0] if not trades_df.empty else pd.DataFrame()
-    loss_trades = trades_df[trades_df['pnl'] < 0] if not trades_df.empty else pd.DataFrame()
-    winrate = (len(win_trades) / total_trades * 100) if total_trades > 0 else 0
-    avg_trade = trades_df['pnl'].mean() if not trades_df.empty else 0
-    best_trade = trades_df['pnl'].max() if not trades_df.empty else 0
-    worst_trade = trades_df['pnl'].min() if not trades_df.empty else 0
+    if not trades_df.empty:
+        win_trades = trades_df[trades_df['pnl'] > 0]
+        loss_trades = trades_df[trades_df['pnl'] < 0]
+        winrate = (len(win_trades) / total_trades * 100) if total_trades > 0 else 0
+        avg_trade = trades_df['pnl'].mean()
+        best_trade = trades_df['pnl'].max()
+        worst_trade = trades_df['pnl'].min()
+    else:
+        win_trades = pd.DataFrame()
+        loss_trades = pd.DataFrame()
+        winrate = 0
+        avg_trade = 0
+        best_trade = 0
+        worst_trade = 0
     max_drawdown = 0
     avg_drawdown = 0
     try:
         dd = strat.analyzers.detailed_drawdown.get_analysis()
         max_drawdown = dd.get('max_drawdown', 0)
         avg_drawdown = dd.get('avg_drawdown', 0)
-    except Exception as e:
+    except (AttributeError, KeyError) as e:
         print(f"Error accessing drawdown analysis: {e}")
     final_value = cerebro.broker.getvalue()
     total_return = (final_value - initial_cash) / initial_cash * 100
@@ -213,9 +203,13 @@ def run_backtest(data, verbose=True, **kwargs):
         sharpe_ratio = strat.analyzers.sharpe.get_analysis()["sharperatio"]
         if sharpe_ratio is None:
             sharpe_ratio = 0.0
-    except:
+    except (AttributeError, KeyError):
         sharpe_ratio = 0.0
     profit_factor = (win_trades['pnl'].sum() / abs(loss_trades['pnl'].sum())) if not loss_trades.empty else 0
+    try:
+        sqn = strat.analyzers.sqn.get_analysis()['sqn']
+    except (AttributeError, KeyError):
+        sqn = 0.0
     formatted_results = {
         "Start": data.datetime.iloc[0].strftime("%Y-%m-%d"),
         "End": data.datetime.iloc[-1].strftime("%Y-%m-%d"),
@@ -231,6 +225,7 @@ def run_backtest(data, verbose=True, **kwargs):
         "Avg. Drawdown [%]": avg_drawdown,
         "Sharpe Ratio": float(sharpe_ratio),
         "Profit Factor": profit_factor,
+        "SQN": sqn,
     }
     if verbose:
         print("\n=== Strategy Performance Report ===")
@@ -246,6 +241,7 @@ def run_backtest(data, verbose=True, **kwargs):
         print(f"\nMax Drawdown: {float(formatted_results['Max. Drawdown [%]']):.2f}%")
         print(f"Sharpe Ratio: {float(formatted_results['Sharpe Ratio']):.2f}")
         print(f"Profit Factor: {float(formatted_results['Profit Factor']):.2f}")
+        print(f"SQN: {float(formatted_results['SQN']):.2f}")
     return formatted_results
 
 def process_file(args):
@@ -255,35 +251,47 @@ def process_file(args):
         parts = filename.split('-')
         symbol = parts[1]
         timeframe = parts[2]
-        print(f"\nTesting {symbol} {timeframe}...")
+    except (IndexError, ValueError) as e:
+        print(f"Error parsing filename {filename}: {str(e)}")
+        return (None, filename)
+    print(f"\nTesting {symbol} {timeframe}...")
+    try:
         data_df = pd.read_csv(data_path)
         data_df["datetime"] = pd.to_datetime(data_df["datetime"])
-        results = run_backtest(
-            data_df,
-            verbose=False,
-            symbol=symbol,
-            timeframe=timeframe,
-            data_source="Bybit",
-            fast_sma=5,
-            medium_sma=8,
-            slow_sma=13,
-            rsi=14,
-            stop_loss=0.01,
-            take_profit=0.01
-        )
-        summary = {
-            'symbol': symbol,
-            'timeframe': timeframe,
-            'winrate': results.get('Win Rate [%]', 0),
-            'final_equity': results.get('Equity Final [$]', 0),
-            'total_trades': results.get('# Trades', 0),
-            'max_drawdown': results.get('Max. Drawdown [%]', 0)
-        }
-        return (summary, filename)
-    except Exception as e:
-        print(f"Error processing {data_path}: {str(e)}")
-        print(traceback.format_exc())
+    except (IOError, ValueError) as e:
+        print(f"Error reading or parsing data for {filename}: {str(e)}")
         return (None, filename)
+    results = run_backtest(
+        data_df,
+        verbose=False,
+        ema_short=9,
+        ema_long=21,
+        sar_step=0.02,
+        sar_max=0.2,
+        rsi_period=14,
+        rsi_overbought=70,
+        rsi_oversold=30,
+        bb_period=21,
+        bb_devfactor=2.0,
+        stop_loss=0.01,
+        take_profit=0.02
+    )
+    log_result(
+        strategy="EMA_BB_PSAR_RSI",
+        coinpair=symbol,
+        timeframe=timeframe,
+        leverage=LEVERAGE,
+        results=results
+    )
+    summary = {
+        'symbol': symbol,
+        'timeframe': timeframe,
+        'winrate': results.get('Win Rate [%]', 0),
+        'final_equity': results.get('Equity Final [$]', 0),
+        'total_trades': results.get('# Trades', 0),
+        'max_drawdown': results.get('Max. Drawdown [%]', 0)
+    }
+    return (summary, filename)
 
 if __name__ == "__main__":
     try:
@@ -312,7 +320,7 @@ if __name__ == "__main__":
             for fname in failed_files:
                 print(f"- {fname}")
         if all_results:
-            pd.DataFrame(all_results).to_csv("partial_backtest_results.csv", index=False)
+            pd.DataFrame(all_results).to_csv("partial_ema_bb_psar_rsi_results.csv", index=False)
     except Exception as e:
         print("\nException occurred in main execution:")
         print(str(e))
@@ -331,8 +339,8 @@ if __name__ == "__main__":
                 for fname in failed_files:
                     print(f"- {fname}")
             if all_results:
-                pd.DataFrame(all_results).to_csv("partial_backtest_results.csv", index=False)
+                pd.DataFrame(all_results).to_csv("partial_ema_bb_psar_rsi_results.csv", index=False)
         except Exception as e2:
             print("\nError printing partial results:")
             print(str(e2))
-            print(traceback.format_exc())
+            print(traceback.format_exc()) 

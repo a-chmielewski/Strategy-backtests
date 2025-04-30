@@ -1,33 +1,88 @@
 import backtrader as bt
 import pandas as pd
-import numpy as np
-import math
 import traceback
 import os
 import concurrent.futures
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from analyzers import TradeRecorder, DetailedDrawdownAnalyzer, SQNAnalyzer
 from results_logger import log_result
 
 LEVERAGE = 50
-class StrategyTemplate(bt.Strategy):
+
+class TripleSMA_Strategy(bt.Strategy):
     params = (
-        ("param1", 20),
-        ("param2", 14),
+        ("fast_sma", 5),
+        ("medium_sma", 8),
+        ("slow_sma", 13),
+        ("rsi", 14),
+        ("stop_loss", 0.01),
+        ("take_profit", 0.02),
     )
+
     def __init__(self):
-        pass  # Add indicator initialization here
+        self.fast_sma = bt.indicators.SMA(self.data.close, period=self.p.fast_sma)
+        self.medium_sma = bt.indicators.SMA(self.data.close, period=self.p.medium_sma)
+        self.slow_sma = bt.indicators.SMA(self.data.close, period=self.p.slow_sma)
+        self.rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi)
+        self.x1 = bt.ind.CrossOver(self.fast_sma, self.medium_sma)
+        self.order = None
+
     def calculate_position_size(self, current_price):
-        current_equity = self.broker.getvalue()
-        position_value = current_equity if current_equity < 100 else 100.0
-        leverage = 50
         try:
+            current_equity = self.broker.getvalue()
+            position_value = current_equity if current_equity < 100 else 100.0
+            leverage = LEVERAGE
             position_size = (position_value * leverage) / current_price
-        except ZeroDivisionError:
-            print("Error in calculate_position_size: Division by zero")
+            return position_size
+        except Exception as e:
+            print(f"Error in calculate_position_size: {str(e)}")
             return 0
-        return position_size
+
     def next(self):
-        pass  # Add trading logic here
+        if len(self) < self.p.slow_sma:
+            return
+        if len(self.data) < 2:
+            return
+        if self.order:
+            return
+        closing_price = self.data.close[0]
+        # Manual exit logic
+        if self.position:
+            if self.position.size > 0:  # Long position
+                if self.x1[0] < 0:
+                    self.close()
+                    return
+            elif self.position.size < 0:  # Short position
+                if self.x1[0] > 0:
+                    self.close()
+                    return
+        if not self.position:
+            position_size = self.calculate_position_size(closing_price)
+            if position_size <= 0:
+                return
+            if self.x1[-1] > 0 and self.fast_sma[0] > self.slow_sma[0] and self.rsi[0] < 50:
+                bracket = self.buy_bracket(
+                    size=position_size,
+                    exectype=bt.Order.Market,
+                    stopprice=closing_price * (1 - self.p.stop_loss),
+                    limitprice=closing_price * (1 + self.p.take_profit),
+                )
+                self.order = bracket[0] if bracket else None
+            elif self.x1[-1] < 0 and self.fast_sma[0] < self.slow_sma[0] and self.rsi[0] > 50:
+                bracket = self.sell_bracket(
+                    size=position_size,
+                    exectype=bt.Order.Market,
+                    stopprice=closing_price * (1 + self.p.stop_loss),
+                    limitprice=closing_price * (1 - self.p.take_profit),
+                )
+                self.order = bracket[0] if bracket else None
+
+    def notify_order(self, order):
+        if self.order and order.ref == self.order.ref and \
+        order.status in (order.Completed, order.Canceled,
+                            order.Margin, order.Rejected):
+            self.order = None
 
 def run_backtest(data, verbose=True, **kwargs):
     cerebro = bt.Cerebro()
@@ -45,12 +100,16 @@ def run_backtest(data, verbose=True, **kwargs):
     )
     cerebro.adddata(feed)
     strategy_params = {
-        "param1": kwargs.get("param1", 20),
-        "param2": kwargs.get("param2", 14),
+        "fast_sma": kwargs.get("fast_sma", 5),
+        "medium_sma": kwargs.get("medium_sma", 8),
+        "slow_sma": kwargs.get("slow_sma", 13),
+        "rsi": kwargs.get("rsi", 14),
+        "stop_loss": kwargs.get("stop_loss", 0.01),
+        "take_profit": kwargs.get("take_profit", 0.02),
     }
-    cerebro.addstrategy(StrategyTemplate, **strategy_params)
+    cerebro.addstrategy(TripleSMA_Strategy, **strategy_params)
     initial_cash = 100.0
-    leverage = 50
+    leverage = LEVERAGE
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.setcommission(
         commission=0.0002,
@@ -158,11 +217,15 @@ def process_file(args):
     results = run_backtest(
         data_df,
         verbose=False,
-        param1=20,
-        param2=14
+        fast_sma=5,
+        medium_sma=8,
+        slow_sma=13,
+        rsi=14,
+        stop_loss=0.01,
+        take_profit=0.02
     )
     log_result(
-            strategy="StrategyTemplate",
+            strategy="TripleSMA_Strategy",
             coinpair=symbol,
             timeframe=timeframe,
             leverage=LEVERAGE,

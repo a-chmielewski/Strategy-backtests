@@ -1,33 +1,79 @@
 import backtrader as bt
 import pandas as pd
-import numpy as np
-import math
 import traceback
 import os
 import concurrent.futures
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from analyzers import TradeRecorder, DetailedDrawdownAnalyzer, SQNAnalyzer
 from results_logger import log_result
 
 LEVERAGE = 50
-class StrategyTemplate(bt.Strategy):
+
+class EMAStrategy(bt.Strategy):
+    """Base template for creating trading strategies"""
+    
     params = (
-        ("param1", 20),
-        ("param2", 14),
+        ("ema_short", 9),
+        ("ema_long", 21),
+        ("stop_loss", 0.01),
+        ("take_profit", 0.02),
     )
+
     def __init__(self):
-        pass  # Add indicator initialization here
+        self.ema_short = bt.indicators.EMA(self.data.close, period=self.p.ema_short)
+        self.ema_long = bt.indicators.EMA(self.data.close, period=self.p.ema_long)
+        # Add crossover indicators
+        self.crossover = bt.indicators.CrossOver(self.ema_short, self.ema_long)
+
+
     def calculate_position_size(self, current_price):
-        current_equity = self.broker.getvalue()
-        position_value = current_equity if current_equity < 100 else 100.0
-        leverage = 50
         try:
+            current_equity = self.broker.getvalue()
+
+            if current_equity < 100:
+                position_value = current_equity
+            else:
+                position_value = 100.0
+
+            leverage = LEVERAGE
+
+            # Adjust position size according to leverage
             position_size = (position_value * leverage) / current_price
-        except ZeroDivisionError:
-            print("Error in calculate_position_size: Division by zero")
+
+            return position_size
+        except Exception as e:
+            print(f"Error in calculate_position_size: {str(e)}")
             return 0
-        return position_size
+
     def next(self):
-        pass  # Add trading logic here
+        if len(self) < self.p.ema_long + 1:
+            return
+        if self.position and self.crossover != 0:
+            self.close()
+            return
+        if self.getposition().size == 0:
+            position_size = self.calculate_position_size(self.data.close[0])
+            
+            # Log signal conditions
+            # self.log(f'Short EMA: {self.ema_short[0]:.5f}, Long EMA: {self.ema_long[0]:.5f}, CrossOver: {self.crossover[0]}')
+            
+            if self.crossover > 0:  # Short EMA crosses above Long EMA
+                # self.log(f'BUY CREATE, Price: {self.data.close[0]:.5f}, Size: {position_size}')
+                self.buy_bracket(
+                    size=position_size, 
+                    exectype=bt.Order.Market,
+                    limitprice=self.data.close[0] * (1 + self.p.take_profit),
+                    stopprice=self.data.close[0] * (1 - self.p.stop_loss)
+                )
+            elif self.crossover < 0:  # Short EMA crosses below Long EMA
+                # self.log(f'SELL CREATE, Price: {self.data.close[0]:.5f}, Size: {position_size}')
+                self.sell_bracket(
+                    size=position_size, 
+                    exectype=bt.Order.Market,
+                    limitprice=self.data.close[0] * (1 - self.p.take_profit),
+                    stopprice=self.data.close[0] * (1 + self.p.stop_loss)
+                )
 
 def run_backtest(data, verbose=True, **kwargs):
     cerebro = bt.Cerebro()
@@ -45,17 +91,19 @@ def run_backtest(data, verbose=True, **kwargs):
     )
     cerebro.adddata(feed)
     strategy_params = {
-        "param1": kwargs.get("param1", 20),
-        "param2": kwargs.get("param2", 14),
+        "ema_short": kwargs.get("ema_short", 9),
+        "ema_long": kwargs.get("ema_long", 21),
+        "stop_loss": kwargs.get("stop_loss", 0.01),
+        "take_profit": kwargs.get("take_profit", 0.01),
     }
-    cerebro.addstrategy(StrategyTemplate, **strategy_params)
+    cerebro.addstrategy(EMAStrategy, **strategy_params)
     initial_cash = 100.0
-    leverage = 50
+    leverage = LEVERAGE
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.setcommission(
         commission=0.0002,
-        margin=1.0 / leverage,
-        commtype=bt.CommInfoBase.COMM_PERC
+        commtype=bt.CommInfoBase.COMM_PERC,
+        margin=1.0 / leverage
     )
     cerebro.broker.set_slippage_perc(0.0001)
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", riskfreerate=0.0)
@@ -106,6 +154,10 @@ def run_backtest(data, verbose=True, **kwargs):
     except (AttributeError, KeyError):
         sharpe_ratio = 0.0
     profit_factor = (win_trades['pnl'].sum() / abs(loss_trades['pnl'].sum())) if not loss_trades.empty else 0
+    try:
+        sqn = strat.analyzers.sqn.get_analysis()['sqn']
+    except (AttributeError, KeyError):
+        sqn = 0.0
     formatted_results = {
         "Start": data.datetime.iloc[0].strftime("%Y-%m-%d"),
         "End": data.datetime.iloc[-1].strftime("%Y-%m-%d"),
@@ -121,6 +173,7 @@ def run_backtest(data, verbose=True, **kwargs):
         "Avg. Drawdown [%]": avg_drawdown,
         "Sharpe Ratio": float(sharpe_ratio),
         "Profit Factor": profit_factor,
+        "SQN": sqn,
     }
     if verbose:
         print("\n=== Strategy Performance Report ===")
@@ -136,6 +189,7 @@ def run_backtest(data, verbose=True, **kwargs):
         print(f"\nMax Drawdown: {float(formatted_results['Max. Drawdown [%]']):.2f}%")
         print(f"Sharpe Ratio: {float(formatted_results['Sharpe Ratio']):.2f}")
         print(f"Profit Factor: {float(formatted_results['Profit Factor']):.2f}")
+        print(f"SQN: {float(formatted_results['SQN']):.2f}")
     return formatted_results
 
 def process_file(args):
@@ -158,16 +212,18 @@ def process_file(args):
     results = run_backtest(
         data_df,
         verbose=False,
-        param1=20,
-        param2=14
+        ema_short=9,
+        ema_long=21,
+        stop_loss=0.01,
+        take_profit=0.02
     )
     log_result(
-            strategy="StrategyTemplate",
-            coinpair=symbol,
-            timeframe=timeframe,
-            leverage=LEVERAGE,
-            results=results
-        )
+        strategy="EMAStrategy",
+        coinpair=symbol,
+        timeframe=timeframe,
+        leverage=LEVERAGE,
+        results=results
+    )
     summary = {
         'symbol': symbol,
         'timeframe': timeframe,
@@ -179,16 +235,12 @@ def process_file(args):
     return (summary, filename)
 
 if __name__ == "__main__":
-    data_folder = os.path.join(os.path.dirname(__file__), '..', 'data')
-    data_folder = os.path.abspath(data_folder)
     try:
+        data_folder = os.path.join(os.path.dirname(__file__), '..', 'data')
+        data_folder = os.path.abspath(data_folder)
         files = [f for f in os.listdir(data_folder) if f.startswith('bybit-') and f.endswith('.csv')]
-    except (OSError, IOError) as e:
-        print(f"Error listing files in {data_folder}: {str(e)}")
-        files = []
-    all_results = []
-    failed_files = []
-    try:
+        all_results = []
+        failed_files = []
         with concurrent.futures.ProcessPoolExecutor() as executor:
             results = list(executor.map(process_file, [(f, data_folder) for f in files]))
             for summary, fname in results:
@@ -209,27 +261,27 @@ if __name__ == "__main__":
             for fname in failed_files:
                 print(f"- {fname}")
         if all_results:
-            pd.DataFrame(all_results).to_csv("partial_backtest_results.csv", index=False)
+            pd.DataFrame(all_results).to_csv("partial_ema_results.csv", index=False)
     except Exception as e:
-        print("\nException occurred during processing:")
+        print("\nException occurred in main execution:")
         print(str(e))
         print(traceback.format_exc())
-        if all_results:
-            try:
-                sorted_results = sorted(all_results, key=lambda x: x['winrate'], reverse=True)[:3]
-                print("\n=== Top 3 Results by Win Rate (Partial) ===")
-                for i, result in enumerate(sorted_results, 1):
-                    print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
-                    print(f"Win Rate: {result['winrate']:.2f}%")
-                    print(f"Total Trades: {result['total_trades']}")
-                    print(f"Final Equity: {result['final_equity']}")
-                    print(f"Max Drawdown: {result['max_drawdown']:.2f}%")
-                if failed_files:
-                    print("\nThe following files failed to process:")
-                    for fname in failed_files:
-                        print(f"- {fname}")
-                pd.DataFrame(all_results).to_csv("partial_backtest_results.csv", index=False)
-            except Exception as e2:
-                print("\nError printing partial results:")
-                print(str(e2))
-                print(traceback.format_exc()) 
+        try:
+            sorted_results = sorted(all_results, key=lambda x: x['winrate'], reverse=True)[:3]
+            print("\n=== Top 3 Results by Win Rate (Partial) ===")
+            for i, result in enumerate(sorted_results, 1):
+                print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
+                print(f"Win Rate: {result['winrate']:.2f}%")
+                print(f"Total Trades: {result['total_trades']}")
+                print(f"Final Equity: {result['final_equity']}")
+                print(f"Max Drawdown: {result['max_drawdown']:.2f}%")
+            if failed_files:
+                print("\nThe following files failed to process:")
+                for fname in failed_files:
+                    print(f"- {fname}")
+            if all_results:
+                pd.DataFrame(all_results).to_csv("partial_ema_results.csv", index=False)
+        except Exception as e2:
+            print("\nError printing partial results:")
+            print(str(e2))
+            print(traceback.format_exc()) 
