@@ -124,10 +124,10 @@ def fetch_all_ticks(symbols=None, categories=None):
 if __name__ == "__main__":
     # Example usage:
     # 1. Fetch all available pairs
-    # pairs_df = fetch_futures_pairs()
+    pairs_df = fetch_futures_pairs()
     
     # 2. Fetch tick data for specific symbols
-    fetch_tick_data('BTCUSDT', 'linear')  # For single symbol
+    # fetch_tick_data('BTCUSDT', 'linear')  # For single symbol
     
     # 3. Fetch tick data for all available pairs
     # fetch_all_ticks()

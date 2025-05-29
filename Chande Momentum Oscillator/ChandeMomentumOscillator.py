@@ -8,8 +8,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from analyzers import TradeRecorder, DetailedDrawdownAnalyzer, SQNAnalyzer
 from results_logger import log_result
 
-LEVERAGE = 50
-
 class ChandeMomentumOscillator(bt.Indicator):
     """
     Chande Momentum Oscillator Implementation
@@ -49,6 +47,7 @@ class ChandeMomentumOscillatorStrategy(bt.Strategy):
         ("ma_period", 50),
         ("cmo_slope_atr_mult", 1.5),  # ATR multiplier for CMO slope threshold
         ("time_stop_bars", 30),       # Time stop in bars
+        ("leverage", 1),              # Leverage parameter
     )
 
     def __init__(self):
@@ -72,17 +71,12 @@ class ChandeMomentumOscillatorStrategy(bt.Strategy):
     def calculate_position_size(self, current_price):
         try:
             current_equity = self.broker.getvalue()
-
             if current_equity < 100:
                 position_value = current_equity
             else:
                 position_value = 100.0
-
-            leverage = LEVERAGE
-
-            # Adjust position size according to leverage
+            leverage = self.p.leverage
             position_size = (position_value * leverage) / current_price
-
             return position_size
         except Exception as e:
             print(f"Error in calculate_position_size: {str(e)}")
@@ -220,7 +214,7 @@ class ChandeMomentumOscillatorStrategy(bt.Strategy):
                                       else (trade['entry_price'] - exit_order['exit_price']) * exit_order['size']
                             })
 
-def run_backtest(data, verbose=True, **kwargs):
+def run_backtest(data, verbose=True, leverage=1, **kwargs):
     cerebro = bt.Cerebro()
 
     feed = bt.feeds.PandasData(
@@ -247,13 +241,13 @@ def run_backtest(data, verbose=True, **kwargs):
         "ma_period": kwargs.get("ma_period", 50),
         "cmo_slope_atr_mult": kwargs.get("cmo_slope_atr_mult", 1.5),
         "time_stop_bars": kwargs.get("time_stop_bars", 30),
+        "leverage": leverage,
     }
 
     # Add strategy with parameters
     cerebro.addstrategy(ChandeMomentumOscillatorStrategy, **strategy_params)
     
     initial_cash = 100.0
-    leverage = LEVERAGE  # Default leverage
     
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.setcommission(
@@ -386,18 +380,19 @@ def run_backtest(data, verbose=True, **kwargs):
     return formatted_results
 
 def process_file(args):
-    filename, data_folder = args
+    filename, data_folder, leverage = args
     data_path = os.path.join(data_folder, filename)
     try:
         parts = filename.split('-')
         symbol = parts[1]
         timeframe = parts[2]
-        print(f"\nTesting {symbol} {timeframe}...")
+        print(f"\nTesting {symbol} {timeframe} with leverage {leverage}...")
         data_df = pd.read_csv(data_path)
         data_df["datetime"] = pd.to_datetime(data_df["datetime"])
         results = run_backtest(
             data_df,
             verbose=False,
+            leverage=leverage,
             period=14,
             overbought=50,
             oversold=-50,
@@ -411,7 +406,7 @@ def process_file(args):
             strategy="ChandeMomentumOscillator",
             coinpair=symbol,
             timeframe=timeframe,
-            leverage=LEVERAGE,
+            leverage=leverage,
             results=results
         )
         summary = {
@@ -435,44 +430,54 @@ if __name__ == "__main__":
         files = [f for f in os.listdir(data_folder) if f.startswith('bybit-') and f.endswith('.csv')]
         all_results = []
         failed_files = []
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            results = list(executor.map(process_file, [(f, data_folder) for f in files]))
-            for summary, fname in results:
-                if summary is not None:
-                    all_results.append(summary)
-                else:
-                    failed_files.append(fname)
-        sorted_results = sorted(all_results, key=lambda x: x['winrate'], reverse=True)[:3]
-        print("\n=== Top 3 Results by Win Rate ===")
-        for i, result in enumerate(sorted_results, 1):
-            print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
-            print(f"Win Rate: {result['winrate']:.2f}%")
-            print(f"Total Trades: {result['total_trades']}")
-            print(f"Final Equity: {result['final_equity']}")
-            print(f"Max Drawdown: {result['max_drawdown']:.2f}%")
-        if failed_files:
-            print("\nThe following files failed to process:")
-            for fname in failed_files:
-                print(f"- {fname}")
-        if all_results:
-            pd.DataFrame(all_results).to_csv("partial_cmo_results.csv", index=False)
-    except Exception as e:
-        print("\nException occurred in main execution:")
-        print(str(e))
-        print(traceback.format_exc())
-        try:
-            sorted_results = sorted(all_results, key=lambda x: x['winrate'], reverse=True)[:3]
-            print("\n=== Top 3 Results by Win Rate (Partial) ===")
+        leverages = [1, 5, 10, 15, 25, 50]
+        for leverage in leverages:
+            print(f"\n==============================\nRunning all backtests for LEVERAGE = {leverage}\n==============================")
+            with concurrent.futures.ProcessPoolExecutor() as executor:
+                results = list(executor.map(process_file, [(f, data_folder, leverage) for f in files]))
+                for summary, fname in results:
+                    if summary is not None:
+                        summary['leverage'] = leverage
+                        all_results.append(summary)
+                    else:
+                        failed_files.append((fname, leverage))
+            # Print top 3 for this leverage
+            leverage_results = [r for r in all_results if r['leverage'] == leverage]
+            sorted_results = sorted(leverage_results, key=lambda x: x['winrate'], reverse=True)[:3]
+            print(f"\n=== Top 3 Results by Win Rate for LEVERAGE {leverage} ===")
             for i, result in enumerate(sorted_results, 1):
                 print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
                 print(f"Win Rate: {result['winrate']:.2f}%")
                 print(f"Total Trades: {result['total_trades']}")
                 print(f"Final Equity: {result['final_equity']}")
                 print(f"Max Drawdown: {result['max_drawdown']:.2f}%")
+        if failed_files:
+            print("\nThe following files failed to process:")
+            for fname, lev in failed_files:
+                print(f"- {fname} (leverage {lev})")
+        # Optionally write partial results to disk
+        if all_results:
+            pd.DataFrame(all_results).to_csv("partial_cmo_results.csv", index=False)
+    except Exception as e:
+        print("\nException occurred in main execution:")
+        print(str(e))
+        print(traceback.format_exc())
+        # Print whatever results were collected so far
+        try:
+            for leverage in [1, 5, 10, 15, 25, 50]:
+                leverage_results = [r for r in all_results if r['leverage'] == leverage]
+                sorted_results = sorted(leverage_results, key=lambda x: x['winrate'], reverse=True)[:3]
+                print(f"\n=== Top 3 Results by Win Rate (Partial) for LEVERAGE {leverage} ===")
+                for i, result in enumerate(sorted_results, 1):
+                    print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
+                    print(f"Win Rate: {result['winrate']:.2f}%")
+                    print(f"Total Trades: {result['total_trades']}")
+                    print(f"Final Equity: {result['final_equity']}")
+                    print(f"Max Drawdown: {result['max_drawdown']:.2f}%")
             if failed_files:
                 print("\nThe following files failed to process:")
-                for fname in failed_files:
-                    print(f"- {fname}")
+                for fname, lev in failed_files:
+                    print(f"- {fname} (leverage {lev})")
             if all_results:
                 pd.DataFrame(all_results).to_csv("partial_cmo_results.csv", index=False)
         except Exception as e2:

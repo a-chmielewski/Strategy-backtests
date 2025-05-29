@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import backtrader as bt
 from volatility_adaptive_scalping import VolatilityAdaptiveScalping
+import volatility_adaptive_scalping as vas
 
 def load_market_data(file_path: str) -> pd.DataFrame:
     """Load and prepare market data from CSV file"""
@@ -158,6 +159,30 @@ def test_volatility_adaptive_scalping(file_path: str):
     print(f"Average RSI: {np.nanmean(rsi):.2f}")
     print(f"Trading Window Coverage: {np.mean(time_mask)*100:.1f}% of total time")
 
+def test_leverage_variation(file_path: str):
+    leverages = [1, 5, 10, 15, 25, 50]
+    for leverage in leverages:
+        print(f"\nRunning VolatilityAdaptiveScalping with leverage={leverage}")
+        vas.LEVERAGE = leverage
+        df = load_market_data(file_path)
+        cerebro = bt.Cerebro()
+        data = bt.feeds.PandasData(
+            dataname=df,
+            datetime='datetime',
+            open='Open',
+            high='High',
+            low='Low',
+            close='Close',
+            volume='Volume',
+            openinterest=-1
+        )
+        cerebro.adddata(data)
+        cerebro.addstrategy(vas.VolatilityAdaptiveScalping)
+        results = cerebro.run()
+        strategy = results[0]
+        print(f"Final equity for leverage {leverage}: {strategy.broker.getvalue()}")
+
 if __name__ == "__main__":
     file_path = r"F:\Algo Trading TRAINING\Strategy backtests\data\bybit-BTCUSDT-5m-20240929-to-20241128.csv"
-    test_volatility_adaptive_scalping(file_path) 
+    test_volatility_adaptive_scalping(file_path)
+    test_leverage_variation(file_path) 

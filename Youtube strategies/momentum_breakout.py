@@ -238,7 +238,7 @@ def run_backtest(data, verbose=True, **kwargs):
     return formatted_results
 
 def process_file(args):
-    filename, data_folder = args
+    filename, data_folder, leverage = args
     data_path = os.path.join(data_folder, filename)
     try:
         parts = filename.split('-')
@@ -247,13 +247,15 @@ def process_file(args):
     except (IndexError, ValueError) as e:
         print(f"Error parsing filename {filename}: {str(e)}")
         return (None, filename)
-    print(f"\nTesting {symbol} {timeframe}...")
+    print(f"\nTesting {symbol} {timeframe} with leverage {leverage}...")
     try:
         data_df = pd.read_csv(data_path)
         data_df["datetime"] = pd.to_datetime(data_df["datetime"])
     except (IOError, ValueError) as e:
         print(f"Error reading or parsing data for {filename}: {str(e)}")
         return (None, filename)
+    global LEVERAGE
+    LEVERAGE = leverage
     results = run_backtest(
         data_df,
         verbose=False,
@@ -266,15 +268,16 @@ def process_file(args):
         max_bars_in_trade=20
     )
     log_result(
-            strategy="MomentumBreakoutStrategy",
-            coinpair=symbol,
-            timeframe=timeframe,
-            leverage=LEVERAGE,
-            results=results
-        )
+        strategy="MomentumBreakoutYoutube",
+        coinpair=symbol,
+        timeframe=timeframe,
+        leverage=leverage,
+        results=results
+    )
     summary = {
         'symbol': symbol,
         'timeframe': timeframe,
+        'leverage': leverage,
         'winrate': results.get('Win Rate [%]', 0),
         'final_equity': results.get('Equity Final [$]', 0),
         'total_trades': results.get('# Trades', 0),
@@ -292,26 +295,30 @@ if __name__ == "__main__":
         files = []
     all_results = []
     failed_files = []
+    leverages = [1, 5, 10, 15, 25, 50]
     try:
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            results = list(executor.map(process_file, [(f, data_folder) for f in files]))
-            for summary, fname in results:
-                if summary is not None:
-                    all_results.append(summary)
-                else:
-                    failed_files.append(fname)
-        sorted_results = sorted(all_results, key=lambda x: x['winrate'], reverse=True)[:3]
-        print("\n=== Top 3 Results by Win Rate ===")
-        for i, result in enumerate(sorted_results, 1):
-            print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
-            print(f"Win Rate: {result['winrate']:.2f}%")
-            print(f"Total Trades: {result['total_trades']}")
-            print(f"Final Equity: {result['final_equity']}")
-            print(f"Max Drawdown: {result['max_drawdown']:.2f}%")
+        for leverage in leverages:
+            print(f"\n==============================\nRunning all backtests for LEVERAGE = {leverage}\n==============================")
+            with concurrent.futures.ProcessPoolExecutor() as executor:
+                results = list(executor.map(process_file, [(f, data_folder, leverage) for f in files]))
+                for summary, fname in results:
+                    if summary is not None:
+                        all_results.append(summary)
+                    else:
+                        failed_files.append((fname, leverage))
+            leverage_results = [r for r in all_results if r['leverage'] == leverage]
+            sorted_results = sorted(leverage_results, key=lambda x: x['winrate'], reverse=True)[:3]
+            print(f"\n=== Top 3 Results by Win Rate for LEVERAGE {leverage} ===")
+            for i, result in enumerate(sorted_results, 1):
+                print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
+                print(f"Win Rate: {result['winrate']:.2f}%")
+                print(f"Total Trades: {result['total_trades']}")
+                print(f"Final Equity: {result['final_equity']}")
+                print(f"Max Drawdown: {result['max_drawdown']:.2f}%")
         if failed_files:
             print("\nThe following files failed to process:")
-            for fname in failed_files:
-                print(f"- {fname}")
+            for fname, lev in failed_files:
+                print(f"- {fname} (leverage {lev})")
         if all_results:
             pd.DataFrame(all_results).to_csv("partial_backtest_results.csv", index=False)
     except Exception as e:
@@ -320,19 +327,22 @@ if __name__ == "__main__":
         print(traceback.format_exc())
         if all_results:
             try:
-                sorted_results = sorted(all_results, key=lambda x: x['winrate'], reverse=True)[:3]
-                print("\n=== Top 3 Results by Win Rate (Partial) ===")
-                for i, result in enumerate(sorted_results, 1):
-                    print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
-                    print(f"Win Rate: {result['winrate']:.2f}%")
-                    print(f"Total Trades: {result['total_trades']}")
-                    print(f"Final Equity: {result['final_equity']}")
-                    print(f"Max Drawdown: {result['max_drawdown']:.2f}%")
+                for leverage in leverages:
+                    leverage_results = [r for r in all_results if r['leverage'] == leverage]
+                    sorted_results = sorted(leverage_results, key=lambda x: x['winrate'], reverse=True)[:3]
+                    print(f"\n=== Top 3 Results by Win Rate (Partial) for LEVERAGE {leverage} ===")
+                    for i, result in enumerate(sorted_results, 1):
+                        print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
+                        print(f"Win Rate: {result['winrate']:.2f}%")
+                        print(f"Total Trades: {result['total_trades']}")
+                        print(f"Final Equity: {result['final_equity']}")
+                        print(f"Max Drawdown: {result['max_drawdown']:.2f}%")
                 if failed_files:
                     print("\nThe following files failed to process:")
-                    for fname in failed_files:
-                        print(f"- {fname}")
-                pd.DataFrame(all_results).to_csv("partial_backtest_results.csv", index=False)
+                    for fname, lev in failed_files:
+                        print(f"- {fname} (leverage {lev})")
+                if all_results:
+                    pd.DataFrame(all_results).to_csv("partial_backtest_results.csv", index=False)
             except Exception as e2:
                 print("\nError printing partial results:")
                 print(str(e2))

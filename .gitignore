@@ -164,3 +164,4 @@ RAG/scripts/APIkeys.py
 rules.txt
 cursor_project_rules/*
 *.csv
+*.md

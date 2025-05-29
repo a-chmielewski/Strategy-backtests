@@ -4,7 +4,8 @@ import sys
 from collections import OrderedDict
 from datetime import datetime
 
-RESULTS_FILE = "all_backtest_results.csv"
+# Directory where per-strategy result files are stored
+RESULTS_DIR = "results"
 FIELDNAMES = [
     "strategy", "coinpair", "timeframe", "leverage",
     "start", "end", "duration", "equity_final", "return_pct",
@@ -21,19 +22,14 @@ def is_valid_date(s: str) -> bool:
         return False
 
 def log_result(strategy, coinpair, timeframe, leverage, results):
-    # DEBUG AT ENTRY
-    print(f"[log_result] strategy={strategy!r}, coinpair={coinpair!r}, "
-          f"timeframe={timeframe!r}, leverage={leverage!r}, "
-          f"start={results.get('Start')!r}")
-
-    # 1) Basic identifier sanity
-    if not strategy or not coinpair or not timeframe or leverage is None:
+    # Basic identifier sanity
+    if not (strategy and coinpair and timeframe) or leverage is None:
         print(f"[log_result ERROR] Missing identifier: "
               f"{strategy=}, {coinpair=}, {timeframe=}, {leverage=}",
               file=sys.stderr)
         return
 
-    # 2) Build our new row
+    # Build our new row
     new_row = {
         "strategy":      str(strategy),
         "coinpair":      str(coinpair),
@@ -55,52 +51,52 @@ def log_result(strategy, coinpair, timeframe, leverage, results):
         "profit_factor": results.get("Profit Factor", ""),
     }
 
-    # 3) Skip entirely if metrics are all empty
-    value_fields = [
+    # Skip if all metric fields are empty
+    metric_fields = [
         "start", "end", "duration", "equity_final", "return_pct",
         "num_trades", "win_rate", "avg_trade", "best_trade", "worst_trade",
         "max_drawdown", "avg_drawdown", "sharpe_ratio", "profit_factor"
     ]
-    if not any(new_row[f] not in (None, "") for f in value_fields):
+    if not any(new_row[f] not in (None, "") for f in metric_fields):
         print("[log_result] No metrics present, skip writing.")
         return
 
-    # 4) Load existing rows into an OrderedDict keyed by our 4 IDs,
-    #    but drop any row whose 'start' isn't a valid date.
+    # Ensure results directory exists
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    file_path = os.path.join(RESULTS_DIR, f"{strategy}.csv")
+
+    # Load existing rows, if any
     rows_map = OrderedDict()
-    if os.path.isfile(RESULTS_FILE):
-        with open(RESULTS_FILE, newline="") as f:
+    if os.path.isfile(file_path):
+        with open(file_path, newline="") as f:
             reader = csv.DictReader(f)
-            # If headers are corrupt, warn & skip loading
-            if reader.fieldnames != FIELDNAMES:
-                print(f"[log_result WARNING] Header mismatch: {reader.fieldnames!r}")
-            else:
+            if reader.fieldnames == FIELDNAMES:
                 for ex in reader:
-                    # must have all 4 keys
+                    # require identifiers
                     if not all(ex.get(k) for k in ("strategy","coinpair","timeframe","leverage")):
                         continue
-                    # filter out any row with non-ISO start
                     if not is_valid_date(ex.get("start","")):
                         continue
-
-                    key = (ex["strategy"], ex["coinpair"], ex["timeframe"], ex["leverage"])
+                    key = (
+                        ex["strategy"], ex["coinpair"],
+                        ex["timeframe"], ex["leverage"]
+                    )
                     rows_map[key] = ex
+            else:
+                print(f"[log_result WARNING] Header mismatch in {file_path}, starting fresh.")
 
-    # 5) Insert or replace our new row
-    key = (new_row["strategy"], new_row["coinpair"], new_row["timeframe"], new_row["leverage"])
+    # Insert or replace our new row
+    key = (new_row["strategy"], new_row["coinpair"],
+           new_row["timeframe"], new_row["leverage"])
     action = "Replacing" if key in rows_map else "Appending"
     print(f"[log_result] {action} row for key={key}")
     rows_map[key] = new_row
 
-    # 6) Write everything back out
-    with open(RESULTS_FILE, "w", newline="") as f:
+    # Write back out
+    with open(file_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
         writer.writeheader()
-
-        # Clean each row dict so it only has the FIELDNAMES keys:
-        cleaned_rows = [
-            { key: row.get(key, "") for key in FIELDNAMES }
-            for row in rows_map.values()
-        ]
-
-        writer.writerows(cleaned_rows)
+        for row in rows_map.values():
+            # ensure only the known fields are output
+            clean = {k: row.get(k, "") for k in FIELDNAMES}
+            writer.writerow(clean)
