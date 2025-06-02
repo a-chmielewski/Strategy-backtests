@@ -56,7 +56,7 @@ def get_bybit_data(symbol, timeframe, start_date, end_date=None):
         'secret': keys.API_SECRET,
         'enableRateLimit': True,
         'options': {
-            'defaultType': 'spot',
+            'defaultType': 'linear',
         }
     })
 
@@ -135,14 +135,14 @@ if __name__ == "__main__":
 
     # Pairs and timeframes to fetch
     pairs = [
-        'BTC/USDT', 'ETH/USDT', '1000PEPE/USDT', 'ADA/USDT',
-        'DOGE/USDT', 'LINK/USDT', 'SOL/USDT', 'XRP/USDT'
+        'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'NXPCUSDT', 'TONUSDT', 
+        'XRPUSDT', 'MNTUSDT', 'PEPEUSDT', 'DOGEUSDT', 'SUIUSDT'
     ]
     timeframes = ['1m', '5m']
 
-    # Date range: last 2 months
-    end_date = datetime.datetime.now(timezone.utc)
-    start_date = end_date - datetime.timedelta(days=60)
+    # Date range: last 2 weeks before 29/05/2025 11:00 AM UTC
+    end_date = datetime.datetime(2025, 5, 29, 11, 0, 0, tzinfo=timezone.utc)
+    start_date = end_date - datetime.timedelta(days=14)
 
     for symbol in pairs:
         for timeframe in timeframes:

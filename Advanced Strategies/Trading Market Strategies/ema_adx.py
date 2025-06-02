@@ -7,29 +7,59 @@ import os
 import concurrent.futures
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(__file__, '..', '..', '..')))
 from analyzers import TradeRecorder, DetailedDrawdownAnalyzer, SQNAnalyzer
 from results_logger import log_result
 
 LEVERAGE = 50
 
-class StrategyTemplate(bt.Strategy):
+class EMA_ADX_Strategy(bt.Strategy):
     params = (
-        ("param1", 20),
-        ("param2", 14),
-        ("stop_loss", 0.01),
-        ("take_profit", 0.02),
-        ("time_stop_bars", 30),
+        ("ema_fast", 20),
+        ("ema_slow", 50),
+        ("adx_period", 14),
+        ("rsi_period", 14),
+        ("adx_threshold", 25),
+        ("adx_strong", 30),
+        ("rsi_bull_threshold", 50),
+        ("rsi_bear_threshold", 50),
+        ("stop_loss", 0.005),  # 0.5% stop loss
+        ("take_profit", 0.01),  # 1% take profit (2:1 reward/risk)
+        ("atr_period", 14),
+        ("atr_stop_multiplier", 2.0),
+        ("atr_target_multiplier", 2.0),
+        ("time_stop_bars", 50),
+        ("pullback_bars", 5),  # Look back this many bars for pullback detection
+        ("min_pullback_pct", 0.002),  # Minimum 0.2% pullback to consider valid
     )
 
     def __init__(self):
         """Initialize strategy components"""
         # Initialize trade tracking
         self.trade_exits = []
-        self.active_trades = []  # To track ongoing trades for visualization
+        self.active_trades = []
         
-        # Initialize indicators - Add your indicators here
-        # Example:
-        # self.sma = bt.indicators.SMA(self.data.close, period=self.p.param1)
+        # Initialize indicators
+        self.ema_fast = bt.indicators.EMA(self.data.close, period=self.p.ema_fast)
+        self.ema_slow = bt.indicators.EMA(self.data.close, period=self.p.ema_slow)
+        self.adx = bt.indicators.AverageDirectionalMovementIndex(self.data, period=self.p.adx_period)
+        self.rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi_period)
+        self.atr = bt.indicators.AverageTrueRange(self.data, period=self.p.atr_period)
+        
+        # Trend detection
+        self.ema_cross = bt.indicators.CrossOver(self.ema_fast, self.ema_slow)
+        
+        # Track trend state and pullback detection
+        self.trend_direction = 0  # 1 for bullish, -1 for bearish, 0 for neutral
+        self.trend_confirmed = False
+        self.waiting_for_pullback = False
+        self.pullback_detected = False
+        self.trend_start_bar = None
+        
+        # Track recent highs/lows for pullback detection
+        self.recent_high = 0
+        self.recent_low = float('inf')
+        self.pullback_extreme = 0
         
         # Order and position tracking
         self.order = None
@@ -60,73 +90,227 @@ class StrategyTemplate(bt.Strategy):
             print(f"Error in calculate_position_size: {str(e)}")
             return 0
 
+    def detect_trend_and_strength(self):
+        """Detect trend direction and strength using EMA cross and ADX"""
+        current_price = self.data.close[0]
+        
+        # Check for fresh EMA cross
+        if self.ema_cross[0] > 0:  # Fast EMA crossed above slow EMA
+            if self.adx[0] > self.p.adx_threshold:
+                self.trend_direction = 1  # Bullish
+                self.trend_confirmed = True
+                self.waiting_for_pullback = True
+                self.trend_start_bar = len(self)
+                self.recent_high = current_price
+                self.recent_low = current_price
+                return True
+        elif self.ema_cross[0] < 0:  # Fast EMA crossed below slow EMA
+            if self.adx[0] > self.p.adx_threshold:
+                self.trend_direction = -1  # Bearish
+                self.trend_confirmed = True
+                self.waiting_for_pullback = True
+                self.trend_start_bar = len(self)
+                self.recent_high = current_price
+                self.recent_low = current_price
+                return True
+        
+        # If we have an existing trend, check if it's still valid
+        if self.trend_confirmed:
+            # Trend remains valid if ADX is still strong and EMAs maintain order
+            if self.adx[0] < self.p.adx_threshold - 5:  # Give some buffer
+                self.trend_confirmed = False
+                self.waiting_for_pullback = False
+                self.trend_direction = 0
+                return False
+            
+            # Check if EMA order is maintained
+            if self.trend_direction == 1 and self.ema_fast[0] < self.ema_slow[0]:
+                self.trend_confirmed = False
+                self.waiting_for_pullback = False
+                self.trend_direction = 0
+                return False
+            elif self.trend_direction == -1 and self.ema_fast[0] > self.ema_slow[0]:
+                self.trend_confirmed = False
+                self.waiting_for_pullback = False
+                self.trend_direction = 0
+                return False
+        
+        return self.trend_confirmed
+
+    def detect_pullback(self):
+        """Detect valid pullback for entry"""
+        if not self.waiting_for_pullback:
+            return False
+            
+        current_price = self.data.close[0]
+        
+        # Update recent highs and lows
+        if self.trend_direction == 1:  # Bullish trend
+            if current_price > self.recent_high:
+                self.recent_high = current_price
+            
+            # Check for pullback (price dipping from recent high)
+            pullback_pct = (self.recent_high - current_price) / self.recent_high
+            if pullback_pct >= self.p.min_pullback_pct:
+                # Valid pullback detected, now wait for bounce
+                self.pullback_detected = True
+                self.pullback_extreme = current_price
+                return True
+                
+        elif self.trend_direction == -1:  # Bearish trend
+            if current_price < self.recent_low:
+                self.recent_low = current_price
+            
+            # Check for pullback (price bouncing from recent low)
+            pullback_pct = (current_price - self.recent_low) / self.recent_low
+            if pullback_pct >= self.p.min_pullback_pct:
+                # Valid pullback detected, now wait for reversal
+                self.pullback_detected = True
+                self.pullback_extreme = current_price
+                return True
+        
+        return False
+
+    def check_entry_conditions(self):
+        """Check if conditions are right for entry after pullback"""
+        if not self.pullback_detected:
+            return False, None
+            
+        current_price = self.data.close[0]
+        
+        if self.trend_direction == 1:  # Bullish trend
+            # Look for bounce from pullback
+            # Entry when price moves back up from pullback extreme
+            if current_price > self.pullback_extreme * 1.001:  # 0.1% bounce
+                # Additional confirmations
+                rsi_ok = self.rsi[0] > self.p.rsi_bull_threshold
+                price_above_fast_ema = current_price > self.ema_fast[0] * 0.999  # Allow small tolerance
+                adx_strong = self.adx[0] > self.p.adx_strong
+                
+                if rsi_ok and (price_above_fast_ema or adx_strong):
+                    return True, 'long'
+                    
+        elif self.trend_direction == -1:  # Bearish trend
+            # Look for reversal from pullback
+            # Entry when price moves back down from pullback extreme
+            if current_price < self.pullback_extreme * 0.999:  # 0.1% reversal
+                # Additional confirmations
+                rsi_ok = self.rsi[0] < self.p.rsi_bear_threshold
+                price_below_fast_ema = current_price < self.ema_fast[0] * 1.001  # Allow small tolerance
+                adx_strong = self.adx[0] > self.p.adx_strong
+                
+                if rsi_ok and (price_below_fast_ema or adx_strong):
+                    return True, 'short'
+        
+        return False, None
+
     def next(self):
         """Define trading logic"""
         if self.order or getattr(self, 'order_parent_ref', None) is not None or getattr(self, 'closing', False):
             return
-        
-        # Add minimum bars check based on your indicators
-        # if len(self) < max(self.p.param1, self.p.param2):
-        #     return
+            
+        # Need minimum bars for all indicators
+        min_bars = max(self.p.ema_slow, self.p.adx_period, self.p.rsi_period, self.p.atr_period)
+        if len(self) < min_bars:
+            return
             
         current_price = self.data.close[0]
         if current_price is None or current_price == 0:
             return
         
+        # Step 1: Detect trend and strength
+        trend_valid = self.detect_trend_and_strength()
+        
+        # Step 2: If trend is valid, detect pullback
+        if trend_valid:
+            self.detect_pullback()
+        
         if not self.position:  # If no position is open
-            position_size = self.calculate_position_size(current_price)
+            # Step 3: Check for entry after pullback
+            entry_signal, direction = self.check_entry_conditions()
             
-            # Skip if size is too small
-            if position_size <= 0:
-                return
+            if entry_signal and direction:
+                position_size = self.calculate_position_size(current_price)
                 
-            # Add your entry conditions here
-            # Example buy condition:
-            # if your_buy_condition:
-            #     stop_price = current_price * (1 - self.p.stop_loss)
-            #     take_profit = current_price * (1 + self.p.take_profit)
-            #     
-            #     parent, stop, limit = self.buy_bracket(
-            #         size=position_size,
-            #         exectype=bt.Order.Market,
-            #         stopprice=stop_price,
-            #         limitprice=take_profit,
-            #     )
-            #     self.order = parent
-            #     self.order_parent_ref = parent.ref
-            #     self.entry_bar = len(self)
-            #     self.entry_side = 'long'
-            
-            # Example sell condition:
-            # elif your_sell_condition:
-            #     stop_price = current_price * (1 + self.p.stop_loss)
-            #     take_profit = current_price * (1 - self.p.take_profit)
-            #     
-            #     parent, stop, limit = self.sell_bracket(
-            #         size=position_size,
-            #         exectype=bt.Order.Market,
-            #         stopprice=stop_price,
-            #         limitprice=take_profit,
-            #     )
-            #     self.order = parent
-            #     self.order_parent_ref = parent.ref
-            #     self.entry_bar = len(self)
-            #     self.entry_side = 'short'
-            pass
+                if position_size <= 0:
+                    return
+                
+                # Calculate stop loss and take profit using ATR
+                atr_value = self.atr[0]
+                
+                if direction == 'long':
+                    # Stop loss: below pullback extreme or using ATR
+                    stop_price = min(
+                        self.pullback_extreme * (1 - self.p.stop_loss),
+                        current_price - (atr_value * self.p.atr_stop_multiplier)
+                    )
+                    # Take profit: using ATR or fixed percentage
+                    take_profit = max(
+                        current_price * (1 + self.p.take_profit),
+                        current_price + (atr_value * self.p.atr_target_multiplier)
+                    )
+                    
+                    parent, stop, limit = self.buy_bracket(
+                        size=position_size,
+                        exectype=bt.Order.Market,
+                        stopprice=stop_price,
+                        limitprice=take_profit,
+                    )
+                    self.order = parent
+                    self.order_parent_ref = parent.ref
+                    self.entry_bar = len(self)
+                    self.entry_side = 'long'
+                    
+                    # Reset pullback detection
+                    self.waiting_for_pullback = False
+                    self.pullback_detected = False
+                    
+                elif direction == 'short':
+                    # Stop loss: above pullback extreme or using ATR
+                    stop_price = max(
+                        self.pullback_extreme * (1 + self.p.stop_loss),
+                        current_price + (atr_value * self.p.atr_stop_multiplier)
+                    )
+                    # Take profit: using ATR or fixed percentage
+                    take_profit = min(
+                        current_price * (1 - self.p.take_profit),
+                        current_price - (atr_value * self.p.atr_target_multiplier)
+                    )
+                    
+                    parent, stop, limit = self.sell_bracket(
+                        size=position_size,
+                        exectype=bt.Order.Market,
+                        stopprice=stop_price,
+                        limitprice=take_profit,
+                    )
+                    self.order = parent
+                    self.order_parent_ref = parent.ref
+                    self.entry_bar = len(self)
+                    self.entry_side = 'short'
+                    
+                    # Reset pullback detection
+                    self.waiting_for_pullback = False
+                    self.pullback_detected = False
         else:
-            # Add your exit conditions here
+            # Exit conditions for open positions
             bars_held = len(self) - self.entry_bar if self.entry_bar is not None else 0
             pos = self.getposition()
-            if pos.size > 0:
-                # Add long exit conditions
-                if bars_held >= self.p.time_stop_bars:  # or other_exit_condition:
+            
+            if pos.size > 0:  # Long position
+                # Exit if trend weakens or time stop
+                if (bars_held >= self.p.time_stop_bars or 
+                    self.adx[0] < self.p.adx_threshold - 5 or
+                    current_price < self.ema_fast[0]):
                     self.close()
                     self.closing = True
                     self.entry_bar = None
                     self.entry_side = None
-            elif pos.size < 0:
-                # Add short exit conditions
-                if bars_held >= self.p.time_stop_bars:  # or other_exit_condition:
+                    
+            elif pos.size < 0:  # Short position
+                # Exit if trend weakens or time stop
+                if (bars_held >= self.p.time_stop_bars or
+                    self.adx[0] < self.p.adx_threshold - 5 or
+                    current_price > self.ema_fast[0]):
                     self.close()
                     self.closing = True
                     self.entry_bar = None
@@ -200,7 +384,7 @@ class StrategyTemplate(bt.Strategy):
                               else (trade['entry_price'] - order.executed.price) * trade['size']
                     })
 
-def run_backtest(data, verbose=True, leverage=50, **kwargs):
+def run_backtest(data, verbose=True, leverage=LEVERAGE, **kwargs):
     # Avoid zero-range bars: ensure High > Low on every bar
     mask = data["High"] <= data["Low"]
     if mask.any():
@@ -222,13 +406,24 @@ def run_backtest(data, verbose=True, leverage=50, **kwargs):
     cerebro.adddata(feed)
     
     strategy_params = {
-        "param1": kwargs.get("param1", 20),
-        "param2": kwargs.get("param2", 14),
-        "stop_loss": kwargs.get("stop_loss", 0.01),
-        "take_profit": kwargs.get("take_profit", 0.02),
-        "time_stop_bars": kwargs.get("time_stop_bars", 30),
+        "ema_fast": kwargs.get("ema_fast", 20),
+        "ema_slow": kwargs.get("ema_slow", 50),
+        "adx_period": kwargs.get("adx_period", 14),
+        "rsi_period": kwargs.get("rsi_period", 14),
+        "adx_threshold": kwargs.get("adx_threshold", 25),
+        "adx_strong": kwargs.get("adx_strong", 30),
+        "rsi_bull_threshold": kwargs.get("rsi_bull_threshold", 50),
+        "rsi_bear_threshold": kwargs.get("rsi_bear_threshold", 50),
+        "stop_loss": kwargs.get("stop_loss", 0.005),
+        "take_profit": kwargs.get("take_profit", 0.01),
+        "atr_period": kwargs.get("atr_period", 14),
+        "atr_stop_multiplier": kwargs.get("atr_stop_multiplier", 2.0),
+        "atr_target_multiplier": kwargs.get("atr_target_multiplier", 2.0),
+        "time_stop_bars": kwargs.get("time_stop_bars", 50),
+        "pullback_bars": kwargs.get("pullback_bars", 5),
+        "min_pullback_pct": kwargs.get("min_pullback_pct", 0.002),
     }
-    cerebro.addstrategy(StrategyTemplate, **strategy_params)
+    cerebro.addstrategy(EMA_ADX_Strategy, **strategy_params)
     
     initial_cash = 100.0
     cerebro.broker.setcash(initial_cash)
@@ -352,16 +547,27 @@ def process_file(args):
     results = run_backtest(
         data_df,
         verbose=False,
-        param1=20,
-        param2=14,
-        stop_loss=0.01,
-        take_profit=0.02,
-        time_stop_bars=30,
+        ema_fast=20,
+        ema_slow=50,
+        adx_period=14,
+        rsi_period=14,
+        adx_threshold=25,
+        adx_strong=30,
+        rsi_bull_threshold=50,
+        rsi_bear_threshold=50,
+        stop_loss=0.005,
+        take_profit=0.01,
+        atr_period=14,
+        atr_stop_multiplier=2.0,
+        atr_target_multiplier=2.0,
+        time_stop_bars=50,
+        pullback_bars=5,
+        min_pullback_pct=0.002,
         leverage=leverage
     )
     
     log_result(
-        strategy="StrategyTemplate",
+        strategy="EMA_ADX_TrendRider",
         coinpair=symbol,
         timeframe=timeframe,
         leverage=leverage,
@@ -380,7 +586,7 @@ def process_file(args):
     return (summary, filename)
 
 if __name__ == "__main__":
-    data_folder = os.path.join(os.path.dirname(__file__), '..', 'data')
+    data_folder = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
     data_folder = os.path.abspath(data_folder)
     
     try:
@@ -424,7 +630,7 @@ if __name__ == "__main__":
                 print(f"- {fname} (leverage {lev})")
 
         if all_results:
-            pd.DataFrame(all_results).to_csv("partial_backtest_results.csv", index=False)
+            pd.DataFrame(all_results).to_csv("ema_adx_backtest_results.csv", index=False)
 
     except Exception as e:
         print("\nException occurred during processing:")
@@ -452,9 +658,9 @@ if __name__ == "__main__":
                         print(f"- {fname} (leverage {lev})")
 
                 if all_results:
-                    pd.DataFrame(all_results).to_csv("partial_backtest_results.csv", index=False)
+                    pd.DataFrame(all_results).to_csv("ema_adx_backtest_results.csv", index=False)
                     
             except Exception as e2:
                 print("\nError printing partial results:")
                 print(str(e2))
-                print(traceback.format_exc()) 
+                print(traceback.format_exc())
