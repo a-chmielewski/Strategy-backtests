@@ -17,32 +17,32 @@ class Bollinger_Squeeze_Breakout_Strategy(bt.Strategy):
     params = (
         ("bb_period", 20),
         ("bb_std", 2.0),
-        ("bb_squeeze_threshold", 0.015),  # BB width must be below 1.5% for squeeze detection
-        ("bb_squeeze_bars", 8),  # Minimum bars in squeeze state
+        ("bb_squeeze_threshold", 0.025),  # Increased from 0.015 to 0.025 (2.5% vs 1.5%)
+        ("bb_squeeze_bars", 3),  # Reduced from 8 to 3 bars minimum
         ("adx_period", 14),
-        ("adx_use_filter", True),  # Whether to use ADX as filter
-        ("adx_low_threshold", 25),  # ADX below 25 indicates consolidation
+        ("adx_use_filter", False),  # Disabled ADX filter to be less restrictive
+        ("adx_low_threshold", 30),  # Increased threshold (was 25)
         ("atr_period", 14),
         ("volume_avg_period", 20),
-        ("volume_breakout_multiplier", 1.5),  # 1.5x volume spike for confirmation
-        ("entry_mode", "conservative"),  # "aggressive" or "conservative"
-        ("confirmation_bars", 1),  # Bars to wait for confirmation in conservative mode
-        ("retest_enabled", False),  # Enable retest entry logic
-        ("retest_tolerance_pct", 0.003),  # 0.3% tolerance for retest
-        ("breakout_min_pct", 0.002),  # Minimum 0.2% breakout to consider valid
-        ("stop_loss_pct", 0.01),  # 1% stop loss
-        ("first_target_pct", 0.005),  # 0.5% first target
-        ("range_projection_multiplier", 1.0),  # 1x range height projection
-        ("atr_target_multiplier", 2.0),  # 2x ATR target for runner
-        ("trail_stop_period", 5),  # EMA period for trailing stop
-        ("trail_stop_buffer_pct", 0.001),  # 0.1% buffer below trailing EMA
-        ("partial_exit_pct", 0.5),  # Take 50% profit at first target
-        ("max_hold_bars", 50),  # Maximum bars to hold position
-        ("fake_breakout_exit_bars", 3),  # Quick exit if reversal within 3 bars
-        ("head_fake_protection", True),  # Enable head-fake protection
-        ("position_size_factor", 0.9),  # Use 90% normal size initially
-        ("pyramid_enabled", False),  # Enable pyramiding on trend confirmation
-        ("squeeze_lookback_bars", 50),  # Bars to look back for squeeze history
+        ("volume_breakout_multiplier", 1.2),  # Reduced from 1.5 to 1.2
+        ("entry_mode", "aggressive"),  # Changed to aggressive by default
+        ("confirmation_bars", 1),  # Keep at 1 for conservative mode
+        ("retest_enabled", True),  # Enabled retest logic
+        ("retest_tolerance_pct", 0.005),  # Increased from 0.003 to 0.005 (0.5%)
+        ("breakout_min_pct", 0.001),  # Reduced from 0.002 to 0.001 (0.1%)
+        ("stop_loss_pct", 0.015),  # Increased from 0.01 to 0.015 (1.5%)
+        ("first_target_pct", 0.008),  # Increased from 0.005 to 0.008 (0.8%)
+        ("range_projection_multiplier", 0.8),  # Reduced from 1.0 to 0.8
+        ("atr_target_multiplier", 1.5),  # Reduced from 2.0 to 1.5
+        ("trail_stop_period", 8),  # Increased from 5 to 8
+        ("trail_stop_buffer_pct", 0.002),  # Increased from 0.001 to 0.002
+        ("partial_exit_pct", 0.4),  # Reduced from 0.5 to 0.4 (take less profit)
+        ("max_hold_bars", 80),  # Increased from 50 to 80
+        ("fake_breakout_exit_bars", 5),  # Increased from 3 to 5
+        ("head_fake_protection", False),  # Disabled to be less restrictive
+        ("position_size_factor", 1.0),  # Increased from 0.9 to 1.0 (full size)
+        ("pyramid_enabled", False),  # Keep disabled
+        ("squeeze_lookback_bars", 30),  # Reduced from 50 to 30
     )
 
     def __init__(self):
@@ -130,12 +130,21 @@ class Bollinger_Squeeze_Breakout_Strategy(bt.Strategy):
         # Check if current BB width is below threshold
         bb_squeeze = current_bb_width < self.p.bb_squeeze_threshold
         
-        # Optional ADX filter for consolidation
+        # Optional: also check if BB width is in lower percentile of recent readings
+        if len(self.bb_width) >= 20:
+            recent_widths = [self.bb_width[-i] for i in range(1, 21)]
+            percentile_25 = sorted(recent_widths)[5]  # 25th percentile
+            bb_squeeze_relative = current_bb_width <= percentile_25
+        else:
+            bb_squeeze_relative = True
+        
+        # Optional ADX filter for consolidation (now optional)
         adx_ok = True
         if self.p.adx_use_filter and self.adx is not None and len(self.adx) > 0:
             adx_ok = self.adx[0] < self.p.adx_low_threshold
         
-        return bb_squeeze and adx_ok
+        # Return true if either absolute threshold OR relative squeeze is detected
+        return (bb_squeeze or bb_squeeze_relative) and adx_ok
 
     def update_squeeze_range(self):
         """Update squeeze range during consolidation"""
@@ -196,15 +205,16 @@ class Bollinger_Squeeze_Breakout_Strategy(bt.Strategy):
         candle_range = current_high - current_low
         candle_body = abs(current_close - current_open)
         
-        # Strong momentum candle (body > 60% of range)
-        momentum_ok = candle_body / candle_range > 0.6 if candle_range > 0 else False
+        # Relaxed momentum candle (body > 40% of range, was 60%)
+        momentum_ok = candle_body / candle_range > 0.4 if candle_range > 0 else True
         
         if direction == 'long':
             directional_ok = current_close > current_open  # Green candle
         else:
             directional_ok = current_close < current_open  # Red candle
         
-        return volume_spike and momentum_ok and directional_ok
+        # Return true if volume OR momentum is good (was AND)
+        return volume_spike or (momentum_ok and directional_ok)
 
     def check_retest_opportunity(self, direction):
         """Check for retest entry opportunity"""
@@ -293,12 +303,7 @@ class Bollinger_Squeeze_Breakout_Strategy(bt.Strategy):
         if bars_held >= self.p.max_hold_bars:
             return True, "time_exit"
         
-        # Head-fake protection
-        if self.detect_head_fake():
-            self.head_fake_detected = True
-            return True, "head_fake_exit"
-        
-        # Quick fake breakout exit
+        # Quick fake breakout exit - made less aggressive
         if (bars_held <= self.p.fake_breakout_exit_bars and 
             self.squeeze_low < current_price < self.squeeze_high):
             return True, "fake_breakout"
@@ -410,18 +415,16 @@ class Bollinger_Squeeze_Breakout_Strategy(bt.Strategy):
                             if self.confirm_breakout(direction):
                                 self.enter_position(direction, current_price)
                             else:
-                                # Wait for retest if confirmation fails
-                                if self.p.retest_enabled:
-                                    self.waiting_for_retest = True
-                                else:
-                                    self.reset_squeeze_state()
+                                # Still enter if direction is clear, even without full confirmation
+                                self.enter_position(direction, current_price)
                                     
                         elif self.p.entry_mode == "conservative":
                             # Conservative entry: Wait for confirmation
                             if self.confirm_breakout(direction):
                                 self.waiting_for_confirmation = True
                             else:
-                                self.reset_squeeze_state()
+                                # Accept weaker signals in conservative mode too
+                                self.waiting_for_confirmation = True
                     else:
                         # No breakout, reset squeeze state
                         self.reset_squeeze_state()
@@ -611,32 +614,32 @@ def run_backtest(data, verbose=True, leverage=LEVERAGE, **kwargs):
     strategy_params = {
         "bb_period": kwargs.get("bb_period", 20),
         "bb_std": kwargs.get("bb_std", 2.0),
-        "bb_squeeze_threshold": kwargs.get("bb_squeeze_threshold", 0.015),
-        "bb_squeeze_bars": kwargs.get("bb_squeeze_bars", 8),
+        "bb_squeeze_threshold": kwargs.get("bb_squeeze_threshold", 0.025),
+        "bb_squeeze_bars": kwargs.get("bb_squeeze_bars", 3),
         "adx_period": kwargs.get("adx_period", 14),
-        "adx_use_filter": kwargs.get("adx_use_filter", True),
-        "adx_low_threshold": kwargs.get("adx_low_threshold", 25),
+        "adx_use_filter": kwargs.get("adx_use_filter", False),
+        "adx_low_threshold": kwargs.get("adx_low_threshold", 30),
         "atr_period": kwargs.get("atr_period", 14),
         "volume_avg_period": kwargs.get("volume_avg_period", 20),
-        "volume_breakout_multiplier": kwargs.get("volume_breakout_multiplier", 1.5),
-        "entry_mode": kwargs.get("entry_mode", "conservative"),
+        "volume_breakout_multiplier": kwargs.get("volume_breakout_multiplier", 1.2),
+        "entry_mode": kwargs.get("entry_mode", "aggressive"),
         "confirmation_bars": kwargs.get("confirmation_bars", 1),
-        "retest_enabled": kwargs.get("retest_enabled", False),
-        "retest_tolerance_pct": kwargs.get("retest_tolerance_pct", 0.003),
-        "breakout_min_pct": kwargs.get("breakout_min_pct", 0.002),
-        "stop_loss_pct": kwargs.get("stop_loss_pct", 0.01),
-        "first_target_pct": kwargs.get("first_target_pct", 0.005),
-        "range_projection_multiplier": kwargs.get("range_projection_multiplier", 1.0),
-        "atr_target_multiplier": kwargs.get("atr_target_multiplier", 2.0),
-        "trail_stop_period": kwargs.get("trail_stop_period", 5),
-        "trail_stop_buffer_pct": kwargs.get("trail_stop_buffer_pct", 0.001),
-        "partial_exit_pct": kwargs.get("partial_exit_pct", 0.5),
-        "max_hold_bars": kwargs.get("max_hold_bars", 50),
-        "fake_breakout_exit_bars": kwargs.get("fake_breakout_exit_bars", 3),
-        "head_fake_protection": kwargs.get("head_fake_protection", True),
-        "position_size_factor": kwargs.get("position_size_factor", 0.9),
+        "retest_enabled": kwargs.get("retest_enabled", True),
+        "retest_tolerance_pct": kwargs.get("retest_tolerance_pct", 0.005),
+        "breakout_min_pct": kwargs.get("breakout_min_pct", 0.001),
+        "stop_loss_pct": kwargs.get("stop_loss_pct", 0.015),
+        "first_target_pct": kwargs.get("first_target_pct", 0.008),
+        "range_projection_multiplier": kwargs.get("range_projection_multiplier", 0.8),
+        "atr_target_multiplier": kwargs.get("atr_target_multiplier", 1.5),
+        "trail_stop_period": kwargs.get("trail_stop_period", 8),
+        "trail_stop_buffer_pct": kwargs.get("trail_stop_buffer_pct", 0.002),
+        "partial_exit_pct": kwargs.get("partial_exit_pct", 0.4),
+        "max_hold_bars": kwargs.get("max_hold_bars", 80),
+        "fake_breakout_exit_bars": kwargs.get("fake_breakout_exit_bars", 5),
+        "head_fake_protection": kwargs.get("head_fake_protection", False),
+        "position_size_factor": kwargs.get("position_size_factor", 1.0),
         "pyramid_enabled": kwargs.get("pyramid_enabled", False),
-        "squeeze_lookback_bars": kwargs.get("squeeze_lookback_bars", 50),
+        "squeeze_lookback_bars": kwargs.get("squeeze_lookback_bars", 30),
     }
     cerebro.addstrategy(Bollinger_Squeeze_Breakout_Strategy, **strategy_params)
     
@@ -764,32 +767,32 @@ def process_file(args):
         verbose=False,
         bb_period=20,
         bb_std=2.0,
-        bb_squeeze_threshold=0.015,
-        bb_squeeze_bars=8,
+        bb_squeeze_threshold=0.025,
+        bb_squeeze_bars=3,
         adx_period=14,
-        adx_use_filter=True,
-        adx_low_threshold=25,
+        adx_use_filter=False,
+        adx_low_threshold=30,
         atr_period=14,
         volume_avg_period=20,
-        volume_breakout_multiplier=1.5,
-        entry_mode="conservative",
+        volume_breakout_multiplier=1.2,
+        entry_mode="aggressive",
         confirmation_bars=1,
-        retest_enabled=False,
-        retest_tolerance_pct=0.003,
-        breakout_min_pct=0.002,
-        stop_loss_pct=0.01,
-        first_target_pct=0.005,
-        range_projection_multiplier=1.0,
-        atr_target_multiplier=2.0,
-        trail_stop_period=5,
-        trail_stop_buffer_pct=0.001,
-        partial_exit_pct=0.5,
-        max_hold_bars=50,
-        fake_breakout_exit_bars=3,
-        head_fake_protection=True,
-        position_size_factor=0.9,
+        retest_enabled=True,
+        retest_tolerance_pct=0.005,
+        breakout_min_pct=0.001,
+        stop_loss_pct=0.015,
+        first_target_pct=0.008,
+        range_projection_multiplier=0.8,
+        atr_target_multiplier=1.5,
+        trail_stop_period=8,
+        trail_stop_buffer_pct=0.002,
+        partial_exit_pct=0.4,
+        max_hold_bars=80,
+        fake_breakout_exit_bars=5,
+        head_fake_protection=False,
+        position_size_factor=1.0,
         pyramid_enabled=False,
-        squeeze_lookback_bars=50,
+        squeeze_lookback_bars=30,
         leverage=leverage
     )
     

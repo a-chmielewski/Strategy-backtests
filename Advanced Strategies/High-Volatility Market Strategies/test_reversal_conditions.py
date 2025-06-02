@@ -74,4 +74,82 @@ else:
     if os.path.exists(data_folder):
         for file in os.listdir(data_folder):
             if file.endswith('.csv'):
-                print(f"  - {file}") 
+                print(f"  - {file}")
+
+# Create a test with relaxed parameters to check if strategy can now enter trades
+data_folder = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
+test_files = [
+    'bybit-BTCUSDT-1m.csv',
+    'bybit-ETHUSDT-1m.csv',
+    'bybit-SOLUSDT-1m.csv'
+]
+
+print("Testing Volatility Reversal Scalp Strategy with less restrictive parameters...")
+print("=" * 80)
+
+for filename in test_files:
+    if not os.path.exists(os.path.join(data_folder, filename)):
+        print(f"Skipping {filename} - file not found")
+        continue
+        
+    print(f"\nTesting {filename}...")
+    
+    try:
+        data_df = pd.read_csv(os.path.join(data_folder, filename))
+        data_df["datetime"] = pd.to_datetime(data_df["datetime"])
+        
+        # Test with very relaxed parameters to ensure trades are generated
+        results = run_backtest(
+            data_df.head(1000),  # Use first 1000 rows for quick test
+            verbose=True,
+            bb_period=20,
+            bb_std=2.0,
+            bb_extreme_std=2.0,  # Even more relaxed (2.0 instead of 2.5)
+            atr_period=14,
+            atr_extreme_multiplier=2.0,  # Even more relaxed
+            rsi_period=7,
+            rsi_overbought_extreme=75,  # More relaxed (75 instead of 80)
+            rsi_oversold_extreme=25,    # More relaxed (25 instead of 20)
+            rsi_overbought_moderate=70, # More relaxed
+            rsi_oversold_moderate=30,   # More relaxed
+            volume_climax_multiplier=1.5,  # Much more relaxed (1.5 instead of 2.0)
+            volume_avg_period=20,
+            ema_period=20,
+            reversal_confirmation_bars=3,
+            fibonacci_retracement_1=0.382,
+            fibonacci_retracement_2=0.5,
+            max_hold_bars=8,
+            stop_buffer_pct=0.002,
+            min_spike_size_pct=0.003,  # More relaxed (0.3% instead of 0.5%)
+            position_size_reduction=0.7,
+            partial_exit_pct=0.5,
+            max_consecutive_losses=4,
+            min_score_threshold=2,  # Lower threshold (2 instead of 3)
+            immediate_entry_score=4,  # Lower threshold (4 instead of 5)
+            leverage=10
+        )
+        
+        total_trades = results.get('# Trades', 0)
+        if total_trades > 0:
+            print(f"✅ SUCCESS: {total_trades} trades executed")
+            print(f"   Win Rate: {results.get('Win Rate [%]', 0):.1f}%")
+            print(f"   Final Equity: ${results.get('Equity Final [$]', 0):.2f}")
+        else:
+            print(f"❌ No trades executed - strategy still too restrictive")
+            
+    except Exception as e:
+        print(f"❌ Error testing {filename}: {str(e)}")
+
+print("\n" + "=" * 80)
+print("Test Summary:")
+print("The strategy should now be less restrictive and able to enter trades.")
+print("If you still see '❌ No trades executed', the strategy may need further relaxation.")
+print("Key improvements made:")
+print("- Reduced BB extreme threshold from 3.0σ to 2.5σ")
+print("- Lowered RSI extremes from 85/15 to 80/20")
+print("- Added moderate RSI levels (75/25)")
+print("- Reduced volume multiplier from 3x to 2x")
+print("- Reduced ATR multiplier from 4x to 2.5x")
+print("- Added scoring system with flexible entry conditions")
+print("- Added alternative entry methods for moderate conditions")
+print("- Improved exit conditions with quick scalp targets") 

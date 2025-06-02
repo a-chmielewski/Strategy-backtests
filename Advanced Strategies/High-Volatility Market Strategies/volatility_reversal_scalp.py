@@ -17,24 +17,28 @@ class Volatility_Reversal_Scalp_Strategy(bt.Strategy):
     params = (
         ("bb_period", 20),
         ("bb_std", 2.0),
-        ("bb_extreme_std", 3.0),  # 3 sigma for extreme detection
+        ("bb_extreme_std", 2.5),  # Reduced from 3.0 to 2.5 for easier detection
         ("atr_period", 14),
-        ("atr_extreme_multiplier", 4.0),  # 4x ATR for extreme candle detection
+        ("atr_extreme_multiplier", 2.5),  # Reduced from 4.0 to 2.5
         ("rsi_period", 7),  # Fast RSI for extremes
-        ("rsi_overbought_extreme", 85),
-        ("rsi_oversold_extreme", 15),
-        ("volume_climax_multiplier", 3.0),  # 3x average volume for climax
+        ("rsi_overbought_extreme", 80),  # Reduced from 85 to 80
+        ("rsi_oversold_extreme", 20),    # Increased from 15 to 20
+        ("rsi_overbought_moderate", 75), # New moderate level
+        ("rsi_oversold_moderate", 25),   # New moderate level
+        ("volume_climax_multiplier", 2.0),  # Reduced from 3.0 to 2.0
         ("volume_avg_period", 20),
         ("ema_period", 20),  # For mean reversion target
-        ("reversal_confirmation_bars", 2),  # Bars to confirm reversal pattern
+        ("reversal_confirmation_bars", 3),  # Increased from 2 to allow more time
         ("fibonacci_retracement_1", 0.382),  # 38.2% retracement target
         ("fibonacci_retracement_2", 0.5),    # 50% retracement target
-        ("max_hold_bars", 5),  # Maximum bars to hold contrarian position
-        ("stop_buffer_pct", 0.001),  # 0.1% buffer beyond extreme for stop
-        ("min_spike_size_pct", 0.01),  # Minimum 1% spike to consider
-        ("position_size_reduction", 0.5),  # Use 50% normal size for contrarian trades
+        ("max_hold_bars", 8),  # Increased from 5 to 8
+        ("stop_buffer_pct", 0.002),  # Increased buffer for volatility
+        ("min_spike_size_pct", 0.005),  # Reduced from 0.01 to 0.005
+        ("position_size_reduction", 0.7),  # Increased from 0.5 to 0.7
         ("partial_exit_pct", 0.5),  # Take 50% profit at first target
-        ("max_consecutive_losses", 3),  # Stop after 3 consecutive losses
+        ("max_consecutive_losses", 4),  # Increased from 3 to 4
+        ("min_score_threshold", 3),  # Minimum score to enter trade
+        ("immediate_entry_score", 5),  # Score for immediate entry without reversal wait
     )
 
     def __init__(self):
@@ -108,11 +112,11 @@ class Volatility_Reversal_Scalp_Strategy(bt.Strategy):
             print(f"Error in calculate_position_size: {str(e)}")
             return 0
 
-    def is_extreme_spike(self):
-        """Detect extreme price spikes using multiple criteria"""
+    def evaluate_spike_conditions(self):
+        """Evaluate spike conditions using a scoring system instead of requiring all conditions"""
         if (len(self.bb) == 0 or len(self.atr) == 0 or 
             len(self.rsi) == 0 or len(self.volume_sma) == 0):
-            return False, None
+            return 0, None, None
             
         current_price = self.data.close[0]
         current_high = self.data.high[0]
@@ -123,7 +127,7 @@ class Volatility_Reversal_Scalp_Strategy(bt.Strategy):
         bb_lower = self.bb.lines.bot[0]
         bb_middle = self.bb.lines.mid[0]
         
-        # Calculate extreme Bollinger Band levels (3 sigma)
+        # Calculate extreme Bollinger Band levels
         bb_range = bb_upper - bb_lower
         bb_extreme_upper = bb_middle + (bb_range * self.p.bb_extreme_std / 2)
         bb_extreme_lower = bb_middle - (bb_range * self.p.bb_extreme_std / 2)
@@ -132,31 +136,95 @@ class Volatility_Reversal_Scalp_Strategy(bt.Strategy):
         rsi_value = self.rsi[0]
         avg_volume = self.volume_sma[0]
         
-        # Calculate candle size
+        # Calculate candle metrics
         candle_range = current_high - current_low
         candle_body = abs(self.data.close[0] - self.data.open[0])
+        candle_body_pct = candle_body / current_price if current_price > 0 else 0
         
-        # Criteria for extreme up-spike
-        if (current_price > bb_extreme_upper and  # Far outside BB
-            rsi_value >= self.p.rsi_overbought_extreme and  # Extreme RSI
-            current_volume > avg_volume * self.p.volume_climax_multiplier and  # Volume climax
-            candle_range > atr_value * self.p.atr_extreme_multiplier and  # Extreme candle size
-            candle_body / current_price > self.p.min_spike_size_pct):  # Minimum spike size
+        # Initialize scores for up and down spikes
+        up_score = 0
+        down_score = 0
+        
+        # UP-SPIKE SCORING
+        # 1. Bollinger Band position (2 points for extreme, 1 for regular breach)
+        if current_price > bb_extreme_upper:
+            up_score += 2
+        elif current_price > bb_upper:
+            up_score += 1
             
-            spike_size = (current_high - bb_middle) / bb_middle
-            return True, {'direction': 'up', 'size': spike_size, 'extreme_price': current_high}
-        
-        # Criteria for extreme down-spike
-        elif (current_price < bb_extreme_lower and  # Far outside BB
-              rsi_value <= self.p.rsi_oversold_extreme and  # Extreme RSI
-              current_volume > avg_volume * self.p.volume_climax_multiplier and  # Volume climax
-              candle_range > atr_value * self.p.atr_extreme_multiplier and  # Extreme candle size
-              candle_body / current_price > self.p.min_spike_size_pct):  # Minimum spike size
+        # 2. RSI levels (2 points for extreme, 1 for moderate)
+        if rsi_value >= self.p.rsi_overbought_extreme:
+            up_score += 2
+        elif rsi_value >= self.p.rsi_overbought_moderate:
+            up_score += 1
             
-            spike_size = (bb_middle - current_low) / bb_middle
-            return True, {'direction': 'down', 'size': spike_size, 'extreme_price': current_low}
+        # 3. Volume climax (2 points for high volume, 1 for elevated)
+        if current_volume > avg_volume * self.p.volume_climax_multiplier:
+            up_score += 2
+        elif current_volume > avg_volume * (self.p.volume_climax_multiplier * 0.7):
+            up_score += 1
+            
+        # 4. Candle size relative to ATR (2 points for extreme, 1 for large)
+        if candle_range > atr_value * self.p.atr_extreme_multiplier:
+            up_score += 2
+        elif candle_range > atr_value * (self.p.atr_extreme_multiplier * 0.7):
+            up_score += 1
+            
+        # 5. Minimum body size (1 point if met)
+        if candle_body_pct > self.p.min_spike_size_pct:
+            up_score += 1
+            
+        # 6. Bullish candle confirmation (1 point for green candle on up-spike)
+        if self.data.close[0] > self.data.open[0]:
+            up_score += 1
+            
+        # DOWN-SPIKE SCORING
+        # 1. Bollinger Band position
+        if current_price < bb_extreme_lower:
+            down_score += 2
+        elif current_price < bb_lower:
+            down_score += 1
+            
+        # 2. RSI levels
+        if rsi_value <= self.p.rsi_oversold_extreme:
+            down_score += 2
+        elif rsi_value <= self.p.rsi_oversold_moderate:
+            down_score += 1
+            
+        # 3. Volume climax
+        if current_volume > avg_volume * self.p.volume_climax_multiplier:
+            down_score += 2
+        elif current_volume > avg_volume * (self.p.volume_climax_multiplier * 0.7):
+            down_score += 1
+            
+        # 4. Candle size relative to ATR
+        if candle_range > atr_value * self.p.atr_extreme_multiplier:
+            down_score += 2
+        elif candle_range > atr_value * (self.p.atr_extreme_multiplier * 0.7):
+            down_score += 1
+            
+        # 5. Minimum body size
+        if candle_body_pct > self.p.min_spike_size_pct:
+            down_score += 1
+            
+        # 6. Bearish candle confirmation (1 point for red candle on down-spike)
+        if self.data.close[0] < self.data.open[0]:
+            down_score += 1
+            
+        # Determine direction and return best score
+        if up_score >= down_score and up_score >= self.p.min_score_threshold:
+            spike_size = (current_high - bb_middle) / bb_middle if bb_middle > 0 else 0
+            return up_score, 'up', {'direction': 'up', 'size': spike_size, 'extreme_price': current_high}
+        elif down_score > up_score and down_score >= self.p.min_score_threshold:
+            spike_size = (bb_middle - current_low) / bb_middle if bb_middle > 0 else 0
+            return down_score, 'down', {'direction': 'down', 'size': spike_size, 'extreme_price': current_low}
         
-        return False, None
+        return 0, None, None
+
+    def is_extreme_spike(self):
+        """Legacy method - now uses scoring system"""
+        score, direction, spike_data = self.evaluate_spike_conditions()
+        return score >= self.p.min_score_threshold, spike_data
 
     def detect_reversal_pattern(self, spike_direction):
         """Detect reversal candlestick patterns after extreme spike"""
@@ -286,37 +354,72 @@ class Volatility_Reversal_Scalp_Strategy(bt.Strategy):
         pos = self.getposition()
         bars_held = len(self) - self.entry_bar if self.entry_bar is not None else 0
         
-        # Time-based exit
+        # Calculate key levels
+        bb_middle = self.bb.lines.mid[0]
+        bb_upper = self.bb.lines.top[0]
+        bb_lower = self.bb.lines.bot[0]
+        ema_level = self.ema[0]
+        rsi_value = self.rsi[0]
+        
+        # Time-based exit (but more lenient)
         if bars_held >= self.p.max_hold_bars:
             return True, "time_exit"
         
-        # Calculate targets
-        bb_middle = self.bb.lines.mid[0]
-        ema_level = self.ema[0]
+        # Quick stop-loss check (moved prices significantly against us)
+        if pos.size > 0:  # Long position
+            # Emergency stop if we break below recent support
+            if bars_held >= 2 and current_price < self.entry_price * 0.995:  # 0.5% stop
+                return True, "emergency_stop_long"
+                
+        elif pos.size < 0:  # Short position  
+            # Emergency stop if we break above recent resistance
+            if bars_held >= 2 and current_price > self.entry_price * 1.005:  # 0.5% stop
+                return True, "emergency_stop_short"
         
         if pos.size > 0:  # Long position (fading down-spike)
-            # Target 1: EMA or BB middle
-            target_1 = max(ema_level, bb_middle)
-            
-            if current_price >= target_1 and not self.first_target_hit:
+            # Target 1: Quick scalp target (even smaller move)
+            if current_price >= self.entry_price * 1.002 and not self.first_target_hit:  # 0.2% profit
                 self.first_target_hit = True
+                return True, "quick_scalp_long"
+            
+            # Target 2: BB middle or EMA
+            target_1 = max(ema_level, bb_middle)
+            if current_price >= target_1 and bars_held >= 1:
                 return True, "first_target_long"
                 
-            # Target 2: Further retracement
-            if self.first_target_hit and current_price >= target_1 * 1.01:
+            # Target 3: Further retracement
+            if self.first_target_hit and current_price >= target_1 * 1.005:
                 return True, "second_target_long"
                 
+            # RSI reversal signal
+            if rsi_value >= 70 and bars_held >= 1:  # RSI getting overbought again
+                return True, "rsi_reversal_long"
+                
         elif pos.size < 0:  # Short position (fading up-spike)
-            # Target 1: EMA or BB middle
-            target_1 = min(ema_level, bb_middle)
-            
-            if current_price <= target_1 and not self.first_target_hit:
+            # Target 1: Quick scalp target
+            if current_price <= self.entry_price * 0.998 and not self.first_target_hit:  # 0.2% profit
                 self.first_target_hit = True
+                return True, "quick_scalp_short"
+            
+            # Target 2: BB middle or EMA
+            target_1 = min(ema_level, bb_middle)
+            if current_price <= target_1 and bars_held >= 1:
                 return True, "first_target_short"
                 
-            # Target 2: Further retracement
-            if self.first_target_hit and current_price <= target_1 * 0.99:
+            # Target 3: Further retracement
+            if self.first_target_hit and current_price <= target_1 * 0.995:
                 return True, "second_target_short"
+                
+            # RSI reversal signal
+            if rsi_value <= 30 and bars_held >= 1:  # RSI getting oversold again
+                return True, "rsi_reversal_short"
+        
+        # Momentum reversal against us (price continues in original spike direction)
+        if bars_held >= 2:
+            if pos.size > 0 and current_price < bb_lower:  # Long but price going lower
+                return True, "momentum_reversal_long"
+            elif pos.size < 0 and current_price > bb_upper:  # Short but price going higher
+                return True, "momentum_reversal_short"
         
         return False, None
 
@@ -339,10 +442,19 @@ class Volatility_Reversal_Scalp_Strategy(bt.Strategy):
             return
         
         if not self.position:  # If no position is open
-            # Step 1: Detect extreme spike
-            is_extreme, spike_data = self.is_extreme_spike()
+            # Evaluate current spike conditions
+            score, direction, spike_data = self.evaluate_spike_conditions()
             
-            if is_extreme:
+            # Method 1: Immediate entry on very high score (strong signals)
+            if score >= self.p.immediate_entry_score and spike_data:
+                position_size = self.calculate_position_size(current_price)
+                
+                if position_size > 0:
+                    self._enter_contrarian_trade(spike_data, position_size, current_price, "immediate_high_score")
+                    return
+            
+            # Method 2: Traditional spike detection and reversal confirmation
+            if score >= self.p.min_score_threshold and spike_data:
                 self.extreme_spike_detected = True
                 self.spike_direction = spike_data['direction']
                 self.spike_size = spike_data['size']
@@ -355,61 +467,53 @@ class Volatility_Reversal_Scalp_Strategy(bt.Strategy):
                 self.spike_bar = len(self)
                 return  # Wait for next bar to check reversal
             
-            # Step 2: Check for reversal pattern after extreme spike
+            # Method 3: Check for reversal pattern after detected spike
             if self.extreme_spike_detected and len(self) - self.spike_bar <= self.p.reversal_confirmation_bars:
                 pattern_detected, pattern_type = self.detect_reversal_pattern(self.spike_direction)
                 divergence_confirmed = self.check_rsi_divergence(self.spike_direction)
                 
+                # Enter if we have pattern OR divergence (more flexible)
                 if pattern_detected or divergence_confirmed:
                     position_size = self.calculate_position_size(current_price)
                     
-                    if position_size <= 0:
-                        return
+                    if position_size > 0:
+                        spike_data = {
+                            'direction': self.spike_direction,
+                            'extreme_price': self.spike_high if self.spike_direction == 'up' else self.spike_low
+                        }
+                        self._enter_contrarian_trade(spike_data, position_size, current_price, "reversal_pattern")
+                        
+                        # Reset spike detection
+                        self.extreme_spike_detected = False
+                        self.spike_direction = None
+            
+            # Method 4: Alternative entry on moderate BB breach with volume + RSI
+            elif not self.extreme_spike_detected:
+                bb_upper = self.bb.lines.top[0]
+                bb_lower = self.bb.lines.bot[0]
+                rsi_value = self.rsi[0]
+                current_volume = self.data.volume[0]
+                avg_volume = self.volume_sma[0]
+                
+                # Moderate overbought condition
+                if (current_price > bb_upper and 
+                    rsi_value >= self.p.rsi_overbought_moderate and
+                    current_volume > avg_volume * 1.5):  # 1.5x volume instead of 2x
                     
-                    # Calculate tight stops just beyond extreme
-                    if self.spike_direction == 'up':  # Fade the up-spike (go short)
-                        stop_price = self.spike_high * (1 + self.p.stop_buffer_pct)
-                        target_1, target_2 = self.calculate_retracement_targets({
-                            'direction': 'up', 
-                            'extreme_price': self.spike_high
-                        })
-                        
-                        parent, stop, limit = self.sell_bracket(
-                            size=position_size,
-                            exectype=bt.Order.Market,
-                            stopprice=stop_price,
-                            limitprice=target_1 if target_1 else current_price * 0.99,
-                        )
-                        self.order = parent
-                        self.order_parent_ref = parent.ref
-                        self.entry_bar = len(self)
-                        self.entry_side = 'short'
-                        self.entry_price = current_price
-                        self.first_target_hit = False
-                        
-                    elif self.spike_direction == 'down':  # Fade the down-spike (go long)
-                        stop_price = self.spike_low * (1 - self.p.stop_buffer_pct)
-                        target_1, target_2 = self.calculate_retracement_targets({
-                            'direction': 'down', 
-                            'extreme_price': self.spike_low
-                        })
-                        
-                        parent, stop, limit = self.buy_bracket(
-                            size=position_size,
-                            exectype=bt.Order.Market,
-                            stopprice=stop_price,
-                            limitprice=target_1 if target_1 else current_price * 1.01,
-                        )
-                        self.order = parent
-                        self.order_parent_ref = parent.ref
-                        self.entry_bar = len(self)
-                        self.entry_side = 'long'
-                        self.entry_price = current_price
-                        self.first_target_hit = False
-                        
-                    # Reset spike detection
-                    self.extreme_spike_detected = False
-                    self.spike_direction = None
+                    position_size = self.calculate_position_size(current_price)
+                    if position_size > 0:
+                        spike_data = {'direction': 'up', 'extreme_price': current_price}
+                        self._enter_contrarian_trade(spike_data, position_size, current_price, "moderate_overbought")
+                
+                # Moderate oversold condition        
+                elif (current_price < bb_lower and 
+                      rsi_value <= self.p.rsi_oversold_moderate and
+                      current_volume > avg_volume * 1.5):
+                    
+                    position_size = self.calculate_position_size(current_price)
+                    if position_size > 0:
+                        spike_data = {'direction': 'down', 'extreme_price': current_price}
+                        self._enter_contrarian_trade(spike_data, position_size, current_price, "moderate_oversold")
             
             # Reset spike detection if too much time has passed
             elif self.extreme_spike_detected and len(self) - self.spike_bar > self.p.reversal_confirmation_bars:
@@ -437,6 +541,35 @@ class Volatility_Reversal_Scalp_Strategy(bt.Strategy):
                     self.entry_bar = None
                     self.entry_side = None
                     self.entry_price = None
+
+    def _enter_contrarian_trade(self, spike_data, position_size, current_price, entry_reason):
+        """Helper method to enter contrarian trades with proper stop and target setup"""
+        try:
+            if spike_data['direction'] == 'up':  # Fade the up-spike (go short)
+                stop_price = spike_data['extreme_price'] * (1 + self.p.stop_buffer_pct)
+                target_1, target_2 = self.calculate_retracement_targets(spike_data)
+                
+                # Use market order for immediate entry, manual stop/target management
+                self.order = self.sell(size=position_size, exectype=bt.Order.Market)
+                self.entry_bar = len(self)
+                self.entry_side = 'short'
+                self.entry_price = current_price
+                self.first_target_hit = False
+                
+            elif spike_data['direction'] == 'down':  # Fade the down-spike (go long)
+                stop_price = spike_data['extreme_price'] * (1 - self.p.stop_buffer_pct)
+                target_1, target_2 = self.calculate_retracement_targets(spike_data)
+                
+                # Use market order for immediate entry, manual stop/target management
+                self.order = self.buy(size=position_size, exectype=bt.Order.Market)
+                self.entry_bar = len(self)
+                self.entry_side = 'long'
+                self.entry_price = current_price
+                self.first_target_hit = False
+                
+        except Exception as e:
+            print(f"Error entering contrarian trade: {e}")
+            self.order = None
 
     def notify_trade(self, trade):
         if trade.isopen and trade.justopened:
@@ -539,24 +672,28 @@ def run_backtest(data, verbose=True, leverage=LEVERAGE, **kwargs):
     strategy_params = {
         "bb_period": kwargs.get("bb_period", 20),
         "bb_std": kwargs.get("bb_std", 2.0),
-        "bb_extreme_std": kwargs.get("bb_extreme_std", 3.0),
+        "bb_extreme_std": kwargs.get("bb_extreme_std", 2.5),
         "atr_period": kwargs.get("atr_period", 14),
-        "atr_extreme_multiplier": kwargs.get("atr_extreme_multiplier", 4.0),
+        "atr_extreme_multiplier": kwargs.get("atr_extreme_multiplier", 2.5),
         "rsi_period": kwargs.get("rsi_period", 7),
-        "rsi_overbought_extreme": kwargs.get("rsi_overbought_extreme", 85),
-        "rsi_oversold_extreme": kwargs.get("rsi_oversold_extreme", 15),
-        "volume_climax_multiplier": kwargs.get("volume_climax_multiplier", 3.0),
+        "rsi_overbought_extreme": kwargs.get("rsi_overbought_extreme", 80),
+        "rsi_oversold_extreme": kwargs.get("rsi_oversold_extreme", 20),
+        "rsi_overbought_moderate": kwargs.get("rsi_overbought_moderate", 75),
+        "rsi_oversold_moderate": kwargs.get("rsi_oversold_moderate", 25),
+        "volume_climax_multiplier": kwargs.get("volume_climax_multiplier", 2.0),
         "volume_avg_period": kwargs.get("volume_avg_period", 20),
         "ema_period": kwargs.get("ema_period", 20),
-        "reversal_confirmation_bars": kwargs.get("reversal_confirmation_bars", 2),
+        "reversal_confirmation_bars": kwargs.get("reversal_confirmation_bars", 3),
         "fibonacci_retracement_1": kwargs.get("fibonacci_retracement_1", 0.382),
         "fibonacci_retracement_2": kwargs.get("fibonacci_retracement_2", 0.5),
-        "max_hold_bars": kwargs.get("max_hold_bars", 5),
-        "stop_buffer_pct": kwargs.get("stop_buffer_pct", 0.001),
-        "min_spike_size_pct": kwargs.get("min_spike_size_pct", 0.01),
-        "position_size_reduction": kwargs.get("position_size_reduction", 0.5),
+        "max_hold_bars": kwargs.get("max_hold_bars", 8),
+        "stop_buffer_pct": kwargs.get("stop_buffer_pct", 0.002),
+        "min_spike_size_pct": kwargs.get("min_spike_size_pct", 0.005),
+        "position_size_reduction": kwargs.get("position_size_reduction", 0.7),
         "partial_exit_pct": kwargs.get("partial_exit_pct", 0.5),
-        "max_consecutive_losses": kwargs.get("max_consecutive_losses", 3),
+        "max_consecutive_losses": kwargs.get("max_consecutive_losses", 4),
+        "min_score_threshold": kwargs.get("min_score_threshold", 3),
+        "immediate_entry_score": kwargs.get("immediate_entry_score", 5),
     }
     cerebro.addstrategy(Volatility_Reversal_Scalp_Strategy, **strategy_params)
     
@@ -684,24 +821,28 @@ def process_file(args):
         verbose=False,
         bb_period=20,
         bb_std=2.0,
-        bb_extreme_std=3.0,
+        bb_extreme_std=2.5,
         atr_period=14,
-        atr_extreme_multiplier=4.0,
+        atr_extreme_multiplier=2.5,
         rsi_period=7,
-        rsi_overbought_extreme=85,
-        rsi_oversold_extreme=15,
-        volume_climax_multiplier=3.0,
+        rsi_overbought_extreme=80,
+        rsi_oversold_extreme=20,
+        rsi_overbought_moderate=75,
+        rsi_oversold_moderate=25,
+        volume_climax_multiplier=2.0,
         volume_avg_period=20,
         ema_period=20,
-        reversal_confirmation_bars=2,
+        reversal_confirmation_bars=3,
         fibonacci_retracement_1=0.382,
         fibonacci_retracement_2=0.5,
-        max_hold_bars=5,
-        stop_buffer_pct=0.001,
-        min_spike_size_pct=0.01,
-        position_size_reduction=0.5,
+        max_hold_bars=8,
+        stop_buffer_pct=0.002,
+        min_spike_size_pct=0.005,
+        position_size_reduction=0.7,
         partial_exit_pct=0.5,
-        max_consecutive_losses=3,
+        max_consecutive_losses=4,
+        min_score_threshold=3,
+        immediate_entry_score=5,
         leverage=leverage
     )
     

@@ -4,6 +4,7 @@ import pandas as pd
 def merge_csv_files(folder_path, output_filename="merged_results.csv"):
     """
     Merges all CSV files in the specified folder into a single CSV file.
+    Adds a 'strategy_name' column based on the CSV filename.
 
     Args:
         folder_path (str): The path to the folder containing the CSV files.
@@ -27,6 +28,10 @@ def merge_csv_files(folder_path, output_filename="merged_results.csv"):
         file_path = os.path.join(folder_path, csv_file)
         try:
             df = pd.read_csv(file_path)
+            # Extract strategy name from filename (remove .csv extension)
+            strategy_name = os.path.splitext(csv_file)[0]
+            # Add strategy_name column to the DataFrame
+            df['strategy_name'] = strategy_name
             df_list.append(df)
         except Exception as e:
             print(f"Could not read file {csv_file} due to error: {e}")
@@ -45,6 +50,7 @@ def merge_csv_files(folder_path, output_filename="merged_results.csv"):
     try:
         merged_df.to_csv(output_file_path, index=False)
         print(f"Successfully merged {len(csv_files)} CSV files into {output_file_path}")
+        print(f"Added 'strategy_name' column based on filenames")
     except Exception as e:
         print(f"Could not save merged file due to error: {e}")
 
