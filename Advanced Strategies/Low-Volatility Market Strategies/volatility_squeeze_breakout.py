@@ -17,30 +17,32 @@ class Volatility_Squeeze_Breakout_Strategy(bt.Strategy):
     params = (
         ("bb_period", 20),
         ("bb_std", 2.0),
-        ("bb_squeeze_threshold", 0.01),  # BB width must be below 1% for squeeze detection
-        ("bb_squeeze_bars", 10),  # Minimum bars in squeeze state
+        ("bb_squeeze_threshold", 0.02),  # Increased from 0.01 to 0.02 (2% instead of 1%)
+        ("bb_squeeze_bars", 5),  # Reduced from 10 to 5 bars minimum
         ("adx_period", 14),
-        ("adx_low_threshold", 20),  # ADX below 20 indicates low volatility
+        ("adx_low_threshold", 30),  # Increased from 20 to 30 (more lenient)
         ("atr_period", 14),
         ("volume_avg_period", 20),
-        ("volume_low_threshold", 0.7),  # Volume below 70% average during squeeze
-        ("volume_breakout_multiplier", 2.0),  # 2x volume spike for breakout confirmation
-        ("range_detection_bars", 30),  # Bars to look back for range detection
-        ("range_touch_tolerance", 0.0015),  # 0.15% tolerance for support/resistance
-        ("min_range_touches", 3),  # Minimum touches of S/R levels
-        ("breakout_buffer_pct", 0.002),  # 0.2% beyond range for breakout orders
-        ("confirmation_required", True),  # Require volume + candle confirmation
-        ("candle_close_pct", 0.7),  # Candle must close 70% through its range
-        ("initial_stop_buffer_pct", 0.001),  # 0.1% stop inside range
-        ("quick_profit_pct", 0.005),  # 0.5% quick profit target
-        ("range_projection_multiplier", 1.0),  # 1x range height projection
-        ("atr_target_multiplier", 2.0),  # 2x ATR target
-        ("trail_stop_pct", 0.003),  # 0.3% trailing stop
-        ("partial_exit_pct", 0.5),  # Take 50% profit at first target
-        ("max_hold_bars", 30),  # Maximum bars to hold position
-        ("fake_breakout_exit_bars", 3),  # Exit if no follow-through in 3 bars
-        ("position_size_reduction", 0.8),  # Use 80% normal size for breakout trades
-        ("max_squeeze_bars", 100),  # Maximum bars to wait in squeeze
+        ("volume_low_threshold", 0.85),  # Increased from 0.7 to 0.85 (85% instead of 70%)
+        ("volume_breakout_multiplier", 1.5),  # Reduced from 2.0 to 1.5x volume spike
+        ("range_detection_bars", 20),  # Reduced from 30 to 20 bars lookback
+        ("range_touch_tolerance", 0.003),  # Increased from 0.0015 to 0.003 (0.3% tolerance)
+        ("min_range_touches", 2),  # Reduced from 3 to 2 minimum touches
+        ("breakout_buffer_pct", 0.003),  # Increased from 0.002 to 0.003 (0.3% buffer)
+        ("confirmation_required", False),  # Changed from True to False (optional confirmation)
+        ("candle_close_pct", 0.6),  # Reduced from 0.7 to 0.6 (60% instead of 70%)
+        ("initial_stop_buffer_pct", 0.002),  # Increased from 0.001 to 0.002
+        ("quick_profit_pct", 0.004),  # Reduced from 0.005 to 0.004 (0.4% target)
+        ("range_projection_multiplier", 0.8),  # Reduced from 1.0 to 0.8
+        ("atr_target_multiplier", 1.5),  # Reduced from 2.0 to 1.5x ATR
+        ("trail_stop_pct", 0.004),  # Increased from 0.003 to 0.004
+        ("partial_exit_pct", 0.4),  # Reduced from 0.5 to 0.4 (take 40% profit)
+        ("max_hold_bars", 50),  # Increased from 30 to 50 bars
+        ("fake_breakout_exit_bars", 5),  # Increased from 3 to 5 bars
+        ("position_size_reduction", 0.9),  # Increased from 0.8 to 0.9 (90% instead of 80%)
+        ("max_squeeze_bars", 150),  # Increased from 100 to 150 bars
+        ("min_range_size_pct", 0.003),  # New: minimum range size of 0.3%
+        ("enable_simple_squeeze", True),  # New: enable simpler squeeze detection
     )
 
     def __init__(self):
@@ -131,13 +133,42 @@ class Volatility_Squeeze_Breakout_Strategy(bt.Strategy):
         # Calculate Bollinger Band width as percentage
         bb_width_pct = (bb_upper - bb_lower) / current_price
         
-        # Check squeeze criteria
-        bb_squeeze = bb_width_pct < self.p.bb_squeeze_threshold
-        adx_low = adx_value < self.p.adx_low_threshold
-        volume_low = current_volume < (avg_volume * self.p.volume_low_threshold)
+        if self.p.enable_simple_squeeze:
+            # Simpler squeeze detection - only require BB squeeze
+            return bb_width_pct < self.p.bb_squeeze_threshold
+        else:
+            # Original complex squeeze detection
+            bb_squeeze = bb_width_pct < self.p.bb_squeeze_threshold
+            adx_low = adx_value < self.p.adx_low_threshold
+            volume_low = current_volume < (avg_volume * self.p.volume_low_threshold)
+            
+            # All criteria must be met for squeeze
+            return bb_squeeze and adx_low and volume_low
+
+    def is_simple_range_detected(self):
+        """Simplified range detection for less restrictive trading"""
+        if len(self) < 10:  # Need minimum data
+            return False
+            
+        # Look at recent highs and lows
+        lookback = min(15, len(self))
+        recent_highs = [self.data.high[-i] for i in range(lookback)]
+        recent_lows = [self.data.low[-i] for i in range(lookback)]
         
-        # All criteria must be met for squeeze
-        return bb_squeeze and adx_low and volume_low
+        # Simple range: highest high and lowest low
+        resistance = max(recent_highs)
+        support = min(recent_lows)
+        
+        # Validate range makes sense
+        if resistance <= support or (resistance - support) / support < self.p.min_range_size_pct:
+            return False
+        
+        self.range_resistance = resistance
+        self.range_support = support
+        self.range_middle = (resistance + support) / 2
+        self.range_height = resistance - support
+        
+        return True
 
     def detect_support_resistance_range(self):
         """Detect support and resistance levels during squeeze"""
@@ -194,7 +225,7 @@ class Volatility_Squeeze_Breakout_Strategy(bt.Strategy):
         support = min(support_candidates, key=lambda x: x[1])[0]
         
         # Validate range makes sense
-        if resistance <= support or (resistance - support) / support < 0.005:  # Minimum 0.5% range
+        if resistance <= support or (resistance - support) / support < self.p.min_range_size_pct:  # Minimum 0.3% range
             return False
         
         self.range_resistance = resistance
@@ -399,7 +430,13 @@ class Volatility_Squeeze_Breakout_Strategy(bt.Strategy):
                     
                     # Step 2: Detect support/resistance range
                     if not self.range_confirmed:
-                        if self.detect_support_resistance_range():
+                        # Try simple range detection first, fall back to complex if needed
+                        if self.p.enable_simple_squeeze:
+                            range_detected = self.is_simple_range_detected()
+                        else:
+                            range_detected = self.detect_support_resistance_range()
+                            
+                        if range_detected:
                             self.range_confirmed = True
                             self.setup_breakout_levels()
                     
@@ -472,6 +509,61 @@ class Volatility_Squeeze_Breakout_Strategy(bt.Strategy):
                 # No longer in squeeze, reset state
                 if self.squeeze_detected:
                     self.reset_squeeze_state()
+                
+                # Alternative entry: Look for simple range breakouts even without formal squeeze
+                if self.p.enable_simple_squeeze and len(self) % 5 == 0:  # Check every 5 bars to avoid overtrading
+                    if self.is_simple_range_detected():
+                        current_high = self.data.high[0]
+                        current_low = self.data.low[0]
+                        
+                        # Setup simple breakout levels
+                        breakout_long_price = self.range_resistance * (1 + self.p.breakout_buffer_pct)
+                        breakout_short_price = self.range_support * (1 - self.p.breakout_buffer_pct)
+                        
+                        # Check for immediate breakout
+                        if current_high >= breakout_long_price:
+                            # Long breakout
+                            position_size = self.calculate_position_size(current_price)
+                            if position_size > 0:
+                                self.initial_atr = self.atr[0]
+                                stop_price = self.range_support * (1 + self.p.initial_stop_buffer_pct)
+                                quick_target = current_price * (1 + self.p.quick_profit_pct)
+                                
+                                parent, stop, limit = self.buy_bracket(
+                                    size=position_size,
+                                    exectype=bt.Order.Market,
+                                    stopprice=stop_price,
+                                    limitprice=quick_target,
+                                )
+                                self.order = parent
+                                self.order_parent_ref = parent.ref
+                                self.entry_bar = len(self)
+                                self.entry_side = 'long'
+                                self.entry_price = current_price
+                                self.breakout_direction = 'long'
+                                self.first_target_hit = False
+                                
+                        elif current_low <= breakout_short_price:
+                            # Short breakout
+                            position_size = self.calculate_position_size(current_price)
+                            if position_size > 0:
+                                self.initial_atr = self.atr[0]
+                                stop_price = self.range_resistance * (1 - self.p.initial_stop_buffer_pct)
+                                quick_target = current_price * (1 - self.p.quick_profit_pct)
+                                
+                                parent, stop, limit = self.sell_bracket(
+                                    size=position_size,
+                                    exectype=bt.Order.Market,
+                                    stopprice=stop_price,
+                                    limitprice=quick_target,
+                                )
+                                self.order = parent
+                                self.order_parent_ref = parent.ref
+                                self.entry_bar = len(self)
+                                self.entry_side = 'short'
+                                self.entry_price = current_price
+                                self.breakout_direction = 'short'
+                                self.first_target_hit = False
                     
         else:
             # Check exit conditions
@@ -589,30 +681,32 @@ def run_backtest(data, verbose=True, leverage=LEVERAGE, **kwargs):
     strategy_params = {
         "bb_period": kwargs.get("bb_period", 20),
         "bb_std": kwargs.get("bb_std", 2.0),
-        "bb_squeeze_threshold": kwargs.get("bb_squeeze_threshold", 0.01),
-        "bb_squeeze_bars": kwargs.get("bb_squeeze_bars", 10),
+        "bb_squeeze_threshold": kwargs.get("bb_squeeze_threshold", 0.02),
+        "bb_squeeze_bars": kwargs.get("bb_squeeze_bars", 5),
         "adx_period": kwargs.get("adx_period", 14),
-        "adx_low_threshold": kwargs.get("adx_low_threshold", 20),
+        "adx_low_threshold": kwargs.get("adx_low_threshold", 30),
         "atr_period": kwargs.get("atr_period", 14),
         "volume_avg_period": kwargs.get("volume_avg_period", 20),
-        "volume_low_threshold": kwargs.get("volume_low_threshold", 0.7),
-        "volume_breakout_multiplier": kwargs.get("volume_breakout_multiplier", 2.0),
-        "range_detection_bars": kwargs.get("range_detection_bars", 30),
-        "range_touch_tolerance": kwargs.get("range_touch_tolerance", 0.0015),
-        "min_range_touches": kwargs.get("min_range_touches", 3),
-        "breakout_buffer_pct": kwargs.get("breakout_buffer_pct", 0.002),
-        "confirmation_required": kwargs.get("confirmation_required", True),
-        "candle_close_pct": kwargs.get("candle_close_pct", 0.7),
-        "initial_stop_buffer_pct": kwargs.get("initial_stop_buffer_pct", 0.001),
-        "quick_profit_pct": kwargs.get("quick_profit_pct", 0.005),
-        "range_projection_multiplier": kwargs.get("range_projection_multiplier", 1.0),
-        "atr_target_multiplier": kwargs.get("atr_target_multiplier", 2.0),
-        "trail_stop_pct": kwargs.get("trail_stop_pct", 0.003),
-        "partial_exit_pct": kwargs.get("partial_exit_pct", 0.5),
-        "max_hold_bars": kwargs.get("max_hold_bars", 30),
-        "fake_breakout_exit_bars": kwargs.get("fake_breakout_exit_bars", 3),
-        "position_size_reduction": kwargs.get("position_size_reduction", 0.8),
-        "max_squeeze_bars": kwargs.get("max_squeeze_bars", 100),
+        "volume_low_threshold": kwargs.get("volume_low_threshold", 0.85),
+        "volume_breakout_multiplier": kwargs.get("volume_breakout_multiplier", 1.5),
+        "range_detection_bars": kwargs.get("range_detection_bars", 20),
+        "range_touch_tolerance": kwargs.get("range_touch_tolerance", 0.003),
+        "min_range_touches": kwargs.get("min_range_touches", 2),
+        "breakout_buffer_pct": kwargs.get("breakout_buffer_pct", 0.003),
+        "confirmation_required": kwargs.get("confirmation_required", False),
+        "candle_close_pct": kwargs.get("candle_close_pct", 0.6),
+        "initial_stop_buffer_pct": kwargs.get("initial_stop_buffer_pct", 0.002),
+        "quick_profit_pct": kwargs.get("quick_profit_pct", 0.004),
+        "range_projection_multiplier": kwargs.get("range_projection_multiplier", 0.8),
+        "atr_target_multiplier": kwargs.get("atr_target_multiplier", 1.5),
+        "trail_stop_pct": kwargs.get("trail_stop_pct", 0.004),
+        "partial_exit_pct": kwargs.get("partial_exit_pct", 0.4),
+        "max_hold_bars": kwargs.get("max_hold_bars", 50),
+        "fake_breakout_exit_bars": kwargs.get("fake_breakout_exit_bars", 5),
+        "position_size_reduction": kwargs.get("position_size_reduction", 0.9),
+        "max_squeeze_bars": kwargs.get("max_squeeze_bars", 150),
+        "min_range_size_pct": kwargs.get("min_range_size_pct", 0.003),
+        "enable_simple_squeeze": kwargs.get("enable_simple_squeeze", True),
     }
     cerebro.addstrategy(Volatility_Squeeze_Breakout_Strategy, **strategy_params)
     
@@ -740,30 +834,32 @@ def process_file(args):
         verbose=False,
         bb_period=20,
         bb_std=2.0,
-        bb_squeeze_threshold=0.01,
-        bb_squeeze_bars=10,
+        bb_squeeze_threshold=0.02,
+        bb_squeeze_bars=5,
         adx_period=14,
-        adx_low_threshold=20,
+        adx_low_threshold=30,
         atr_period=14,
         volume_avg_period=20,
-        volume_low_threshold=0.7,
-        volume_breakout_multiplier=2.0,
-        range_detection_bars=30,
-        range_touch_tolerance=0.0015,
-        min_range_touches=3,
-        breakout_buffer_pct=0.002,
-        confirmation_required=True,
-        candle_close_pct=0.7,
-        initial_stop_buffer_pct=0.001,
-        quick_profit_pct=0.005,
-        range_projection_multiplier=1.0,
-        atr_target_multiplier=2.0,
-        trail_stop_pct=0.003,
-        partial_exit_pct=0.5,
-        max_hold_bars=30,
-        fake_breakout_exit_bars=3,
-        position_size_reduction=0.8,
-        max_squeeze_bars=100,
+        volume_low_threshold=0.85,
+        volume_breakout_multiplier=1.5,
+        range_detection_bars=20,
+        range_touch_tolerance=0.003,
+        min_range_touches=2,
+        breakout_buffer_pct=0.003,
+        confirmation_required=False,
+        candle_close_pct=0.6,
+        initial_stop_buffer_pct=0.002,
+        quick_profit_pct=0.004,
+        range_projection_multiplier=0.8,
+        atr_target_multiplier=1.5,
+        trail_stop_pct=0.004,
+        partial_exit_pct=0.4,
+        max_hold_bars=50,
+        fake_breakout_exit_bars=5,
+        position_size_reduction=0.9,
+        max_squeeze_bars=150,
+        min_range_size_pct=0.003,
+        enable_simple_squeeze=True,
         leverage=leverage
     )
     
