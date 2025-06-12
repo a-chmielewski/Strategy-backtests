@@ -25,12 +25,79 @@ def timeframe_to_sec(timeframe):
     else:
         raise ValueError(f"Unsupported timeframe unit: {unit}")
     
+def get_top_usdt_perpetual_futures(exchange, top_n=10):
+    """
+    Get top N USDT perpetual futures pairs by 24h volume from Bybit.
+    
+    Args:
+        exchange: ccxt exchange instance
+        top_n (int): Number of top pairs to return (default: 10)
+    
+    Returns:
+        list: List of symbol names (e.g., ['BTCUSDT', 'ETHUSDT', ...])
+    """
+    try:
+        print(f"Fetching top {top_n} USDT perpetual futures by volume...")
+        
+        # Fetch all tickers
+        tickers = exchange.fetch_tickers()
+        print(f"Found {len(tickers)} total tickers")
+        
+        # Filter for USDT perpetual futures
+        usdt_perpetual_pairs = []
+        
+        for symbol, ticker in tickers.items():
+            # Check if it's a USDT pair and has volume data
+            if ('USDT' in symbol and 
+                ticker.get('quoteVolume') is not None and 
+                ticker.get('quoteVolume') > 0):
+                
+                # Additional check to ensure it's a perpetual futures contract
+                market_info = exchange.markets.get(symbol, {})
+                if (market_info.get('type') == 'swap' or 
+                    market_info.get('linear') == True):
+                    
+                    # Extract base symbol name (handle formats like ETH/USDT:USDT -> ETHUSDT)
+                    clean_symbol = symbol.split(':')[0]  # Remove settlement currency part
+                    clean_symbol = clean_symbol.replace('/', '')  # Remove slash
+                    
+                    # Only keep if it ends with USDT
+                    if clean_symbol.endswith('USDT'):
+                        usdt_perpetual_pairs.append({
+                            'symbol': clean_symbol,
+                            'volume': ticker['quoteVolume']
+                        })
+        
+        print(f"Found {len(usdt_perpetual_pairs)} USDT perpetual futures")
+        
+        # Sort by volume (descending) and get top N
+        usdt_perpetual_pairs.sort(key=lambda x: x['volume'], reverse=True)
+        top_pairs = [pair['symbol'] for pair in usdt_perpetual_pairs[:top_n]]
+        
+        print(f"Top {top_n} USDT perpetual futures by volume:")
+        for i, pair_data in enumerate(usdt_perpetual_pairs[:top_n], 1):
+            print(f"{i}. {pair_data['symbol']} - Volume: ${pair_data['volume']:,.2f}")
+        
+        print(f"Selected symbols: {top_pairs}")
+        
+        return top_pairs
+        
+    except Exception as e:
+        print(f"Error fetching top USDT perpetual futures: {e}")
+        print("Full error traceback:", traceback.format_exc())
+        # Fallback to original hardcoded list
+        print("Falling back to hardcoded list...")
+        return [
+            'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'NXPCUSDT', 'TONUSDT',
+            'XRPUSDT', 'MNTUSDT', 'PEPEUSDT', 'DOGEUSDT', 'SUIUSDT'
+        ]
+    
 def get_bybit_data(symbol, timeframe, start_date, end_date=None):
     """
     Fetch historical OHLCV data from Bybit.
     
     Args:
-        symbol (str): Trading pair symbol (e.g., 'BTC/USDT')
+        symbol (str): Trading pair symbol (e.g., 'BTCUSDT')
         timeframe (str): Time interval (e.g., '1m', '5m', '1h')
         start_date (datetime): Start date for historical data
         end_date (datetime, optional): End date for historical data
@@ -38,7 +105,7 @@ def get_bybit_data(symbol, timeframe, start_date, end_date=None):
     # Generate filename with date range
     start_str = start_date.strftime('%Y%m%d')
     end_str = end_date.strftime('%Y%m%d') if end_date else 'now'
-    filename = f'data/bybit-{symbol.replace("/", "")}-{timeframe}-{start_str}-to-{end_str}.csv'
+    filename = f'data/bybit-{symbol}-{timeframe}-{start_str}-to-{end_str}.csv'
     
     # Create data directory if it doesn't exist
     os.makedirs('data', exist_ok=True)
@@ -133,15 +200,22 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Failed to delete {file_path}: {e}")
 
-    # Pairs and timeframes to fetch
-    pairs = [
-        'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'NXPCUSDT', 'TONUSDT', 
-        'XRPUSDT', 'MNTUSDT', 'PEPEUSDT', 'DOGEUSDT', 'SUIUSDT'
-    ]
+    # Initialize Bybit exchange for market data
+    bybit = ccxt.bybit({
+        'apiKey': keys.API_KEY,
+        'secret': keys.API_SECRET,
+        'enableRateLimit': True,
+        'options': {
+            'defaultType': 'linear',
+        }
+    })
+
+    # Get top 10 USDT perpetual futures by volume
+    pairs = get_top_usdt_perpetual_futures(bybit, top_n=10)
     timeframes = ['1m', '5m']
 
-    # Date range: last 2 weeks before 29/05/2025 11:00 AM UTC
-    end_date = datetime.datetime(2025, 5, 29, 11, 0, 0, tzinfo=timezone.utc)
+    # Date range: last 2 weeks before 12/06/2025 10:00 AM UTC
+    end_date = datetime.datetime(2025, 6, 12, 10, 0, 0, tzinfo=timezone.utc)
     start_date = end_date - datetime.timedelta(days=14)
 
     for symbol in pairs:

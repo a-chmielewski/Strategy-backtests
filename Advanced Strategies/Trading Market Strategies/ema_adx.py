@@ -629,8 +629,8 @@ if __name__ == "__main__":
             for fname, lev in failed_files:
                 print(f"- {fname} (leverage {lev})")
 
-        if all_results:
-            pd.DataFrame(all_results).to_csv("ema_adx_backtest_results.csv", index=False)
+        # if all_results:
+        #     pd.DataFrame(all_results).to_csv("results/ema_adx_backtest_results.csv", index=False)
 
     except Exception as e:
         print("\nException occurred during processing:")

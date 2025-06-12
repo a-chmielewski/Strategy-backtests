@@ -10,7 +10,7 @@ FIELDNAMES = [
     "strategy", "coinpair", "timeframe", "leverage",
     "start", "end", "duration", "equity_final", "return_pct",
     "num_trades", "win_rate", "avg_trade", "best_trade", "worst_trade",
-    "max_drawdown", "avg_drawdown", "sharpe_ratio", "profit_factor"
+    "max_drawdown", "avg_drawdown", "sharpe_ratio", "profit_factor", "error"
 ]
 
 def is_valid_date(s: str) -> bool:
@@ -49,16 +49,18 @@ def log_result(strategy, coinpair, timeframe, leverage, results):
         "avg_drawdown":  results.get("Avg. Drawdown [%]", ""),
         "sharpe_ratio":  results.get("Sharpe Ratio", ""),
         "profit_factor": results.get("Profit Factor", ""),
+        "error":         results.get("Error", ""),
     }
 
-    # Skip if all metric fields are empty
+    # Skip if all metric fields are empty AND no error is present
     metric_fields = [
         "start", "end", "duration", "equity_final", "return_pct",
         "num_trades", "win_rate", "avg_trade", "best_trade", "worst_trade",
         "max_drawdown", "avg_drawdown", "sharpe_ratio", "profit_factor"
     ]
-    if not any(new_row[f] not in (None, "") for f in metric_fields):
-        print("[log_result] No metrics present, skip writing.")
+    # Always log if there's an error, otherwise check if any metrics are present
+    if not new_row.get("error") and not any(new_row[f] not in (None, "") for f in metric_fields):
+        print("[log_result] No metrics or error present, skip writing.")
         return
 
     # Ensure results directory exists

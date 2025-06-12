@@ -54,7 +54,27 @@ class Micro_Range_Scalp_Strategy(bt.Strategy):
             period=self.p.bb_period, 
             devfactor=self.p.bb_std
         )
-        self.rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi_period)
+        # Create a simple RSI-like indicator to avoid division by zero
+        class SafeRSI(bt.Indicator):
+            lines = ('rsi',)
+            params = (('period', 14),)
+            
+            def __init__(self):
+                # Calculate price changes
+                price_change = self.data.close - self.data.close(-1)
+                
+                # Separate gains and losses with safety checks
+                gain = bt.Max(price_change, 0.0)
+                loss = bt.Max(-price_change, 0.0)
+                
+                # Use SMA for gains and losses (safer than EMA for division by zero)
+                avg_gain = bt.indicators.SMA(gain, period=self.p.period)
+                avg_loss = bt.indicators.SMA(loss, period=self.p.period)
+                
+                # Safe RSI calculation with division by zero protection
+                self.lines.rsi = 100.0 - (100.0 / (1.0 + (avg_gain / bt.Max(avg_loss, 1e-10))))
+        
+        self.rsi = SafeRSI(period=self.p.rsi_period)
         self.stoch = bt.indicators.Stochastic(
             self.data, 
             period=self.p.stoch_k_period,
@@ -125,11 +145,11 @@ class Micro_Range_Scalp_Strategy(bt.Strategy):
         current_volume = self.data.volume[0]
         avg_volume = self.volume_sma[0]
         
-        # Calculate ATR as percentage of price
-        atr_pct = atr_value / current_price
+        # Calculate ATR as percentage of price (with safety check)
+        atr_pct = atr_value / current_price if current_price > 0 else 0
         
-        # Calculate Bollinger Band width as percentage
-        bb_width_pct = (bb_upper - bb_lower) / current_price
+        # Calculate Bollinger Band width as percentage (with safety check)
+        bb_width_pct = (bb_upper - bb_lower) / current_price if current_price > 0 else 0
         
         # Check low volatility criteria
         atr_low = atr_pct < self.p.atr_low_threshold
@@ -157,7 +177,7 @@ class Micro_Range_Scalp_Strategy(bt.Strategy):
         for i, high in enumerate(lookback_highs):
             touches = 0
             for other_high in lookback_highs:
-                if abs(other_high - high) / high < self.p.range_tolerance_pct:
+                if high > 0 and abs(other_high - high) / high < self.p.range_tolerance_pct:
                     touches += 1
             if touches >= self.p.min_range_touches:
                 high_levels.append(high)
@@ -167,7 +187,7 @@ class Micro_Range_Scalp_Strategy(bt.Strategy):
         for i, low in enumerate(lookback_lows):
             touches = 0
             for other_low in lookback_lows:
-                if abs(other_low - low) / low < self.p.range_tolerance_pct:
+                if low > 0 and abs(other_low - low) / low < self.p.range_tolerance_pct:
                     touches += 1
             if touches >= self.p.min_range_touches:
                 low_levels.append(low)
@@ -179,8 +199,8 @@ class Micro_Range_Scalp_Strategy(bt.Strategy):
         resistance = max(set(high_levels), key=high_levels.count)
         support = min(set(low_levels), key=low_levels.count)
         
-        # Check if it's a micro-range (very tight)
-        range_width_pct = (resistance - support) / support
+        # Check if it's a micro-range (very tight) with safety check
+        range_width_pct = (resistance - support) / support if support > 0 else 0
         
         if range_width_pct <= self.p.micro_range_max_pct and resistance > support:
             self.range_resistance = resistance
@@ -191,9 +211,9 @@ class Micro_Range_Scalp_Strategy(bt.Strategy):
             
             # Count actual touches in recent bars
             self.range_touches_support = sum(1 for low in lookback_lows 
-                                           if abs(low - support) / support < self.p.range_tolerance_pct)
+                                           if support > 0 and abs(low - support) / support < self.p.range_tolerance_pct)
             self.range_touches_resistance = sum(1 for high in lookback_highs 
-                                              if abs(high - resistance) / resistance < self.p.range_tolerance_pct)
+                                              if resistance > 0 and abs(high - resistance) / resistance < self.p.range_tolerance_pct)
             
             return True
         
@@ -201,13 +221,13 @@ class Micro_Range_Scalp_Strategy(bt.Strategy):
 
     def is_near_support(self, price):
         """Check if price is near support level"""
-        if not self.micro_range_detected:
+        if not self.micro_range_detected or self.range_support <= 0:
             return False
         return abs(price - self.range_support) / self.range_support < self.p.range_tolerance_pct
 
     def is_near_resistance(self, price):
         """Check if price is near resistance level"""
-        if not self.micro_range_detected:
+        if not self.micro_range_detected or self.range_resistance <= 0:
             return False
         return abs(price - self.range_resistance) / self.range_resistance < self.p.range_tolerance_pct
 
@@ -264,7 +284,7 @@ class Micro_Range_Scalp_Strategy(bt.Strategy):
             return True, f"range_breakout_{direction}"
         
         # Profit target exits
-        if self.entry_price:
+        if self.entry_price and self.entry_price > 0:
             profit_pct = abs(current_price - self.entry_price) / self.entry_price
             
             if pos.size > 0:  # Long position
@@ -485,7 +505,7 @@ def run_backtest(data, verbose=True, leverage=LEVERAGE, **kwargs):
         openinterest=None,
     )
     cerebro.adddata(feed)
-    
+
     strategy_params = {
         "atr_period": kwargs.get("atr_period", 14),
         "atr_low_threshold": kwargs.get("atr_low_threshold", 0.002),
@@ -726,11 +746,8 @@ if __name__ == "__main__":
             for fname, lev in failed_files:
                 print(f"- {fname} (leverage {lev})")
 
-        if all_results:
-            results_folder = os.path.join(os.path.dirname(__file__), '..', '..', 'results')
-            os.makedirs(results_folder, exist_ok=True)
-            results_path = os.path.join(results_folder, "Micro_Range_Scalp.csv")
-            pd.DataFrame(all_results).to_csv(results_path, index=False)
+        # if all_results:
+        #     pd.DataFrame(all_results).to_csv("results/ema_adx_backtest_results.csv", index=False)
 
     except Exception as e:
         print("\nException occurred during processing:")
@@ -758,12 +775,10 @@ if __name__ == "__main__":
                         print(f"- {fname} (leverage {lev})")
 
                 if all_results:
-                    results_folder = os.path.join(os.path.dirname(__file__), '..', '..', 'results')
-                    os.makedirs(results_folder, exist_ok=True)
-                    results_path = os.path.join(results_folder, "Micro_Range_Scalp.csv")
-                    pd.DataFrame(all_results).to_csv(results_path, index=False)
+                    pd.DataFrame(all_results).to_csv("ema_adx_backtest_results.csv", index=False)
                     
             except Exception as e2:
                 print("\nError printing partial results:")
                 print(str(e2))
-                print(traceback.format_exc()) 
+                print(traceback.format_exc())
+

@@ -630,6 +630,7 @@ class Breakout_And_Retest_Strategy(bt.Strategy):
                     })
 
 def run_backtest(data, verbose=True, leverage=LEVERAGE, **kwargs):
+    # Avoid zero-range bars: ensure High > Low on every bar
     mask = data["High"] <= data["Low"]
     if mask.any():
         data.loc[mask, "High"] = data.loc[mask, "Low"] + 1e-8
@@ -697,7 +698,10 @@ def run_backtest(data, verbose=True, leverage=LEVERAGE, **kwargs):
     cerebro.addanalyzer(SQNAnalyzer, _name='sqn')
     
     results = cerebro.run()
-    strat = results[0][0] if isinstance(results[0], (list, tuple)) else results[0]
+    if len(results) > 0:
+        strat = results[0][0] if isinstance(results[0], (list, tuple)) else results[0]
+    else:
+        raise ValueError("No results returned from backtest")
 
     trades = strat.analyzers.trade_recorder.get_analysis()
     trades_df = pd.DataFrame(trades) if trades else pd.DataFrame()
@@ -796,8 +800,38 @@ def process_file(args):
     global LEVERAGE
     LEVERAGE = leverage
     
-    results = run_backtest(data_df, verbose=False, leverage=leverage)
+    results = run_backtest(
+        data_df,
+        verbose=False,
+        sr_lookback_period=30,
+        sr_min_touches=3,
+        sr_tolerance_pct=0.002,
+        breakout_min_pct=0.003,
+        volume_breakout_multiplier=1.5,
+        volume_avg_period=20,
+        ema_trend_period=50,
+        use_trend_filter=True,
+        rsi_period=14,
+        rsi_pullback_min=40,
+        rsi_pullback_max=60,
+        retest_timeout_bars=15,
+        retest_tolerance_pct=0.002,
+        reversal_confirmation_bars=2,
+        engulfing_min_ratio=1.2,
+        hammer_ratio=2.0,
+        stop_loss_buffer_pct=0.001,
+        first_target_pct=0.005,
+        measured_move_multiplier=1.0,
+        partial_exit_pct=0.5,
+        trail_stop_period=10,
+        trail_stop_buffer_pct=0.002,
+        max_hold_bars=100,
+        position_size_factor=1.0,
+        min_breakout_volume_decline=0.7,
+        leverage=leverage
+    )
     
+    # Comment out log_result to avoid conflicts with manual CSV saving
     log_result(
         strategy="Breakout_And_Retest",
         coinpair=symbol,
@@ -844,6 +878,7 @@ if __name__ == "__main__":
                     else:
                         failed_files.append((fname, leverage))
 
+            # Show top results for this leverage
             leverage_results = [r for r in all_results if r['leverage'] == leverage]
             sorted_results = sorted(leverage_results, key=lambda x: x['winrate'], reverse=True)[:3]
             
@@ -855,16 +890,43 @@ if __name__ == "__main__":
                 print(f"Final Equity: {result['final_equity']}")
                 print(f"Max Drawdown: {result['max_drawdown']:.2f}%")
 
-        if all_results:
-            results_folder = os.path.join(os.path.dirname(__file__), '..', '..', 'results')
-            os.makedirs(results_folder, exist_ok=True)
-            results_path = os.path.join(results_folder, "Breakout_And_Retest.csv")
-            pd.DataFrame(all_results).to_csv(results_path, index=False)
+        if failed_files:
+            print("\nThe following files failed to process:")
+            for fname, lev in failed_files:
+                print(f"- {fname} (leverage {lev})")
+
+        # if all_results:
+        #     pd.DataFrame(all_results).to_csv("results/breakout_and_retest_backtest_results.csv", index=False)
 
     except Exception as e:
-        print(f"\nException occurred: {str(e)}")
+        print("\nException occurred during processing:")
+        print(str(e))
+        print(traceback.format_exc())
+        
         if all_results:
-            results_folder = os.path.join(os.path.dirname(__file__), '..', '..', 'results')
-            os.makedirs(results_folder, exist_ok=True)
-            results_path = os.path.join(results_folder, "Breakout_And_Retest.csv")
-            pd.DataFrame(all_results).to_csv(results_path, index=False)
+            try:
+                # Show partial results for each leverage
+                for leverage in leverages:
+                    leverage_results = [r for r in all_results if r['leverage'] == leverage]
+                    sorted_results = sorted(leverage_results, key=lambda x: x['winrate'], reverse=True)[:3]
+                    
+                    print(f"\n=== Top 3 Results by Win Rate (Partial) for LEVERAGE {leverage} ===")
+                    for i, result in enumerate(sorted_results, 1):
+                        print(f"\n{i}. {result['symbol']} ({result['timeframe']})")
+                        print(f"Win Rate: {result['winrate']:.2f}%")
+                        print(f"Total Trades: {result['total_trades']}")
+                        print(f"Final Equity: {result['final_equity']}")
+                        print(f"Max Drawdown: {result['max_drawdown']:.2f}%")
+
+                if failed_files:
+                    print("\nThe following files failed to process:")
+                    for fname, lev in failed_files:
+                        print(f"- {fname} (leverage {lev})")
+
+                if all_results:
+                    pd.DataFrame(all_results).to_csv("ema_adx_backtest_results.csv", index=False)
+                    
+            except Exception as e2:
+                print("\nError printing partial results:")
+                print(str(e2))
+                print(traceback.format_exc())

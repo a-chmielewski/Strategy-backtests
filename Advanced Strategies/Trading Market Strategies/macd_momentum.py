@@ -663,11 +663,8 @@ if __name__ == "__main__":
             for fname, lev in failed_files:
                 print(f"- {fname} (leverage {lev})")
 
-        if all_results:
-            results_folder = os.path.join(os.path.dirname(__file__), '..', '..', 'results')
-            os.makedirs(results_folder, exist_ok=True)
-            results_path = os.path.join(results_folder, "MACD_Momentum.csv")
-            pd.DataFrame(all_results).to_csv(results_path, index=False)
+        # if all_results:
+        #     pd.DataFrame(all_results).to_csv("results/ema_adx_backtest_results.csv", index=False)
 
     except Exception as e:
         print("\nException occurred during processing:")
@@ -695,10 +692,7 @@ if __name__ == "__main__":
                         print(f"- {fname} (leverage {lev})")
 
                 if all_results:
-                    results_folder = os.path.join(os.path.dirname(__file__), '..', '..', 'results')
-                    os.makedirs(results_folder, exist_ok=True)
-                    results_path = os.path.join(results_folder, "MACD_Momentum.csv")
-                    pd.DataFrame(all_results).to_csv(results_path, index=False)
+                    pd.DataFrame(all_results).to_csv("ema_adx_backtest_results.csv", index=False)
                     
             except Exception as e2:
                 print("\nError printing partial results:")

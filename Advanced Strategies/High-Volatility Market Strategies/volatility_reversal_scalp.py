@@ -54,7 +54,27 @@ class Volatility_Reversal_Scalp_Strategy(bt.Strategy):
             devfactor=self.p.bb_std
         )
         self.atr = bt.indicators.ATR(self.data, period=self.p.atr_period)
-        self.rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi_period)
+        # Create a simple RSI-like indicator to avoid division by zero
+        class SafeRSI(bt.Indicator):
+            lines = ('rsi',)
+            params = (('period', 14),)
+            
+            def __init__(self):
+                # Calculate price changes
+                price_change = self.data.close - self.data.close(-1)
+                
+                # Separate gains and losses with safety checks
+                gain = bt.Max(price_change, 0.0)
+                loss = bt.Max(-price_change, 0.0)
+                
+                # Use SMA for gains and losses (safer than EMA for division by zero)
+                avg_gain = bt.indicators.SMA(gain, period=self.p.period)
+                avg_loss = bt.indicators.SMA(loss, period=self.p.period)
+                
+                # Safe RSI calculation with division by zero protection
+                self.lines.rsi = 100.0 - (100.0 / (1.0 + (avg_gain / bt.Max(avg_loss, 1e-10))))
+        
+        self.rsi = SafeRSI(period=self.p.rsi_period)
         self.ema = bt.indicators.EMA(self.data.close, period=self.p.ema_period)
         self.volume_sma = bt.indicators.SMA(self.data.volume, period=self.p.volume_avg_period)
         
@@ -118,14 +138,23 @@ class Volatility_Reversal_Scalp_Strategy(bt.Strategy):
             len(self.rsi) == 0 or len(self.volume_sma) == 0):
             return 0, None, None
             
-        current_price = self.data.close[0]
-        current_high = self.data.high[0]
-        current_low = self.data.low[0]
-        current_volume = self.data.volume[0]
-        
-        bb_upper = self.bb.lines.top[0]
-        bb_lower = self.bb.lines.bot[0]
-        bb_middle = self.bb.lines.mid[0]
+        try:
+            current_price = self.data.close[0]
+            current_high = self.data.high[0]
+            current_low = self.data.low[0]
+            current_volume = self.data.volume[0]
+            
+            bb_upper = self.bb.lines.top[0]
+            bb_lower = self.bb.lines.bot[0]
+            bb_middle = self.bb.lines.mid[0]
+            
+            # Safety checks for division by zero
+            if (bb_middle == 0 or np.isnan(bb_middle) or np.isinf(bb_middle) or
+                current_price == 0 or np.isnan(current_price) or np.isinf(current_price)):
+                return 0, None, None
+                
+        except (IndexError, AttributeError, TypeError):
+            return 0, None, None
         
         # Calculate extreme Bollinger Band levels
         bb_range = bb_upper - bb_lower
@@ -135,6 +164,12 @@ class Volatility_Reversal_Scalp_Strategy(bt.Strategy):
         atr_value = self.atr[0]
         rsi_value = self.rsi[0]
         avg_volume = self.volume_sma[0]
+        
+        # Additional safety checks for all indicators
+        if (atr_value == 0 or np.isnan(atr_value) or np.isinf(atr_value) or
+            np.isnan(rsi_value) or np.isinf(rsi_value) or
+            avg_volume == 0 or np.isnan(avg_volume) or np.isinf(avg_volume)):
+            return 0, None, None
         
         # Calculate candle metrics
         candle_range = current_high - current_low
@@ -213,10 +248,10 @@ class Volatility_Reversal_Scalp_Strategy(bt.Strategy):
             
         # Determine direction and return best score
         if up_score >= down_score and up_score >= self.p.min_score_threshold:
-            spike_size = (current_high - bb_middle) / bb_middle if bb_middle > 0 else 0
+            spike_size = (current_high - bb_middle) / bb_middle if bb_middle != 0 and not np.isnan(bb_middle) and not np.isinf(bb_middle) else 0
             return up_score, 'up', {'direction': 'up', 'size': spike_size, 'extreme_price': current_high}
         elif down_score > up_score and down_score >= self.p.min_score_threshold:
-            spike_size = (bb_middle - current_low) / bb_middle if bb_middle > 0 else 0
+            spike_size = (bb_middle - current_low) / bb_middle if bb_middle != 0 and not np.isnan(bb_middle) and not np.isinf(bb_middle) else 0
             return down_score, 'down', {'direction': 'down', 'size': spike_size, 'extreme_price': current_low}
         
         return 0, None, None
@@ -435,6 +470,37 @@ class Volatility_Reversal_Scalp_Strategy(bt.Strategy):
             
         current_price = self.data.close[0]
         if current_price is None or current_price == 0:
+            return
+        
+        # Additional safety checks for indicator values
+        try:
+            # Check if indicators have valid values
+            if (len(self.bb) == 0 or len(self.atr) == 0 or 
+                len(self.rsi) == 0 or len(self.ema) == 0 or len(self.volume_sma) == 0):
+                return
+                
+            # Check for NaN or infinite values in indicators
+            bb_top = self.bb.lines.top[0]
+            bb_bottom = self.bb.lines.bot[0] 
+            bb_mid = self.bb.lines.mid[0]
+            atr_val = self.atr[0]
+            rsi_val = self.rsi[0]
+            ema_val = self.ema[0]
+            volume_sma_val = self.volume_sma[0]
+            
+            if (np.isnan(bb_top) or np.isnan(bb_bottom) or np.isnan(bb_mid) or
+                np.isnan(atr_val) or np.isnan(rsi_val) or np.isnan(ema_val) or
+                np.isnan(volume_sma_val) or np.isinf(bb_top) or np.isinf(bb_bottom) or
+                np.isinf(bb_mid) or np.isinf(atr_val) or np.isinf(rsi_val) or
+                np.isinf(ema_val) or np.isinf(volume_sma_val)):
+                return
+                
+            # Check for zero values that could cause division by zero
+            if bb_mid == 0 or atr_val == 0 or volume_sma_val == 0:
+                return
+                
+        except (IndexError, AttributeError, TypeError):
+            # If we can't access indicator values safely, skip this bar
             return
         
         # Check if trading is disabled due to consecutive losses
@@ -853,7 +919,7 @@ def process_file(args):
         leverage=leverage,
         results=results
     )
-    
+        
     summary = {
         'symbol': symbol,
         'timeframe': timeframe,
@@ -909,12 +975,6 @@ if __name__ == "__main__":
             for fname, lev in failed_files:
                 print(f"- {fname} (leverage {lev})")
 
-        if all_results:
-            results_folder = os.path.join(os.path.dirname(__file__), '..', '..', 'results')
-            os.makedirs(results_folder, exist_ok=True)
-            results_path = os.path.join(results_folder, "Volatility_Reversal_Scalp.csv")
-            pd.DataFrame(all_results).to_csv(results_path, index=False)
-
     except Exception as e:
         print("\nException occurred during processing:")
         print(str(e))
@@ -941,12 +1001,9 @@ if __name__ == "__main__":
                         print(f"- {fname} (leverage {lev})")
 
                 if all_results:
-                    results_folder = os.path.join(os.path.dirname(__file__), '..', '..', 'results')
-                    os.makedirs(results_folder, exist_ok=True)
-                    results_path = os.path.join(results_folder, "Volatility_Reversal_Scalp.csv")
-                    pd.DataFrame(all_results).to_csv(results_path, index=False)
+                    pd.DataFrame(all_results).to_csv("ema_adx_backtest_results.csv", index=False)
                     
             except Exception as e2:
                 print("\nError printing partial results:")
                 print(str(e2))
-                print(traceback.format_exc()) 
+                print(traceback.format_exc())
